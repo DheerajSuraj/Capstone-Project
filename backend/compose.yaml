@@ -1,0 +1,27 @@
+# Local development database.
+# Spring Boot's Docker Compose support (spring-boot-docker-compose) detects
+# this file on startup, runs `docker compose up`, and injects the connection
+# details automatically — no datasource URL needed in application.yml for dev.
+#
+# Postgres 16 is pinned deliberately: it matches the version we will run in
+# production on the Oracle VM (roadmap §13.2). Dev/prod parity > novelty.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tsb-postgres
+    environment:
+      POSTGRES_DB: tsb
+      POSTGRES_USER: tsb
+      POSTGRES_PASSWORD: tsb_dev_only   # dev-only credential; prod uses env vars
+    ports:
+      - "5433:5432"   # host 5433 -> container 5432 (native Postgres owns host 5432)
+    volumes:
+      - tsb_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tsb -d tsb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  tsb_pgdata:

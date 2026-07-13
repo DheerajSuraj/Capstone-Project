@@ -1,0 +1,30 @@
+# ── Java / Maven ──────────────────────────────────────────────
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+
+# ── IDE ───────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/
+*.code-workspace
+
+# ── Node (frontend, later) ────────────────────────────────────
+node_modules/
+dist/
+.vite/
+
+# ── Environment / secrets ─────────────────────────────────────
+.env
+.env.local
+*.pem
+
+# ── OS noise ──────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
+
+# ── Data / logs ───────────────────────────────────────────────
+*.log
+/ingestion/downloads/
