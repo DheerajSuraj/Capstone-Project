@@ -1,0 +1,24 @@
+// The flagship example strategy from the architecture roadmap.
+// Buys when RSI is oversold in an uptrend, exits when overbought.
+
+strategy "RSI Mean Reversion" {
+    symbol = BTCUSDT
+    timeframe = 1h
+    capital = 10000
+    fee = 0.1%
+
+    let rsi = RSI(14)
+
+    rule entry {
+        IF rsi < 30 AND CLOSE > SMA(CLOSE, 200)
+        THEN BUY qty = 25% OF EQUITY
+    }
+
+    rule exit {
+        IF rsi > 70 THEN SELL ALL
+    }
+
+    rule protection {
+        IF CLOSE < CLOSE[1] * 0.95 THEN SELL ALL
+    }
+}

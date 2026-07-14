@@ -1,0 +1,18 @@
+// Deliberately broken: three independent mistakes.
+// Run this to watch error recovery report ALL of them at once.
+
+strategy "Broken On Purpose" {
+    symbol = BTCUSDT
+
+    rule one {
+        IF rsi < 30 BUY ALL
+    }
+
+    rule two {
+        IF CLOSE[-1] > 5 THEN SELL ALL
+    }
+
+    rule three {
+        IF CLOSE > 5 THEN BUY qty = 25% OF banana
+    }
+}
