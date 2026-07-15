@@ -55,6 +55,18 @@ public final class TslCli {
             System.exit(1);
         }
 
+        // ── Analyze ─────────────────────────────────────────────────────
+        Analyzer.AnalysisResult analyzed =
+                new Analyzer(parsed.strategy().get()).analyze();
+        analyzed.diagnostics().forEach(d -> render(d, sourceLines));
+        if (analyzed.hasErrors() || analyzed.strategy().isEmpty()) {
+            long errorCount = analyzed.diagnostics().stream()
+                    .filter(Diagnostic::isError).count();
+            System.out.println("\ncompilation FAILED with " + errorCount + " error(s)");
+            System.exit(1);
+        }
+        CompiledStrategy compiled = analyzed.strategy().get();
+
         // ── Summary ─────────────────────────────────────────────────────
         StrategyAst.StrategyDecl s = parsed.strategy().get();
         System.out.println("── strategy \"" + s.name() + "\" ─── OK ─────────");
@@ -77,6 +89,12 @@ public final class TslCli {
                         System.out.println("    ELSE " + describe(a)));
             }
         }
+        System.out.println("indicators to precompute:");
+        for (CompiledStrategy.IndicatorInstance i : compiled.indicators()) {
+            System.out.println("  " + i.key());
+        }
+        System.out.println("warm-up: " + compiled.warmupBars()
+                + " bars before the first possible trade");
     }
 
     /** Human line for an action — exhaustive over the sealed Action. */
