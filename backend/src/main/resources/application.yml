@@ -29,8 +29,12 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
-    # No migrations exist yet (Phase 1 delivers V1). Don't fail on that.
     fail-on-missing-locations: false
+    # Fail fast on a badly named migration. Flyway's default is to log a
+    # notice and SKIP the file — which means a migration you thought ran,
+    # didn't, and the app starts anyway against the wrong schema. On a
+    # deployed VM that's a silent data bug; here it cost us a backfill run.
+    validate-migration-naming: true
 
 server:
   port: 8080
