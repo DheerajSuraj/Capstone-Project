@@ -2,6 +2,7 @@ package com.tsb.strategy;
 
 import com.tsb.compiler.CompiledStrategy;
 import com.tsb.execution.BacktestResult;
+import com.tsb.execution.EquityCurves;
 import com.tsb.execution.Metrics;
 import com.tsb.execution.Trade;
 import com.tsb.marketdata.CandleSeries;
@@ -16,7 +17,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -128,7 +128,7 @@ public class BacktestController {
             String lastBarTime,
             MetricsDto metrics,
             List<TradeDto> trades,
-            List<CurvePoint> equityCurve
+            List<EquityCurves.CurvePoint> equityCurve
     ) {
         static Result from(BacktestResult r, CompiledStrategy strategy,
                            CandleSeries series) {
@@ -188,21 +188,10 @@ public class BacktestController {
         }
     }
 
-    public record CurvePoint(long t, double equity) {
-    }
-
-    /** Stride-samples the curve to MAX_CURVE_POINTS, always keeping the
-     *  last point so final equity in the plot is exact. */
-    static List<CurvePoint> downsample(long[] times, double[] equity) {
-        int n = equity.length;
-        int stride = Math.max(1, (int) Math.ceil((double) n / MAX_CURVE_POINTS));
-        List<CurvePoint> points = new ArrayList<>();
-        for (int i = 0; i < n; i += stride) {
-            points.add(new CurvePoint(times[i], equity[i]));
-        }
-        if (n > 0 && (n - 1) % stride != 0) {
-            points.add(new CurvePoint(times[n - 1], equity[n - 1]));
-        }
-        return points;
+    /** Delegates to the shared sampler (also used when persisting runs) —
+     *  promoted to EquityCurves once a second caller appeared, same rule
+     *  as ConstFold. */
+    static List<EquityCurves.CurvePoint> downsample(long[] times, double[] equity) {
+        return EquityCurves.downsample(times, equity, MAX_CURVE_POINTS);
     }
 }
