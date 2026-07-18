@@ -459,24 +459,11 @@ public final class Analyzer {
 
     // ═════════════════════════ Constant folding ════════════════════════
 
-    /** The value of a compile-time-constant numeric expression, if it is one.
-     *  RSI(7 * 2) folds to 14; RSI(CLOSE) does not fold. */
+    /** Delegates to the shared {@link ConstFold} — the engine folds the
+     *  same expressions to derive indicator array keys, and both callers
+     *  must agree by construction, so there is exactly one implementation. */
     private Optional<Double> fold(Expr e) {
-        return switch (e) {
-            case Expr.NumberLit n -> Optional.of(n.value());
-            case Expr.Unary u when u.op() == Expr.UnaryOp.NEG ->
-                    fold(u.operand()).map(v -> -v);
-            case Expr.Binary b -> fold(b.left()).flatMap(l ->
-                    fold(b.right()).flatMap(r -> switch (b.op()) {
-                        case ADD -> Optional.of(l + r);
-                        case SUB -> Optional.of(l - r);
-                        case MUL -> Optional.of(l * r);
-                        case DIV -> r == 0 ? Optional.empty()
-                                : Optional.of(l / r);
-                        default -> Optional.empty();
-                    }));
-            default -> Optional.empty();
-        };
+        return ConstFold.fold(e);
     }
 
     // ═════════════════════════ Warm-up ═════════════════════════════════
