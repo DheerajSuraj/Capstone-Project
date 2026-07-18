@@ -1,0 +1,267 @@
+/* ── TSB design tokens ─────────────────────────────────────────────────
+   Graphite desk, tape-amber interaction, and one strict rule: green/red
+   appear ONLY where they carry profit/loss meaning. Color is semantics. */
+:root {
+  --bg: #14171c;
+  --panel: #1c2027;
+  --panel-2: #22262e;
+  --line: #2a2f38;
+  --text: #e8e6e1;
+  --muted: #8b909a;
+  --accent: #e8b44c;
+  --accent-dim: #b98d3a;
+  --up: #4cc38a;
+  --down: #e5544b;
+  --display: 'Space Grotesk', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#root {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px 80px;
+}
+
+/* ── Header ── */
+.masthead {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+  margin-bottom: 28px;
+}
+
+.masthead h1 {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+.masthead .tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+/* ── Panels ── */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 18px;
+  margin-bottom: 22px;
+}
+
+.panel h2 {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 14px;
+}
+
+/* ── Forms ── */
+label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin: 12px 0 5px;
+}
+
+input[type='text'],
+textarea {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 9px 11px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+textarea {
+  min-height: 260px;
+  resize: vertical;
+  line-height: 1.55;
+  tab-size: 4;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  background: var(--accent);
+  color: #14171c;
+  border: none;
+  border-radius: 4px;
+  padding: 9px 18px;
+  cursor: pointer;
+  margin-top: 14px;
+}
+
+button:hover {
+  background: var(--accent-dim);
+}
+
+button:disabled {
+  background: var(--line);
+  color: var(--muted);
+  cursor: default;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  padding: 5px 12px;
+  margin: 0;
+}
+
+button.ghost:hover {
+  background: rgba(232, 180, 76, 0.08);
+}
+
+/* ── Strategy table ── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding: 6px 10px;
+}
+
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── PnL semantics: the ONLY place green/red exist ── */
+.up {
+  color: var(--up);
+}
+
+.down {
+  color: var(--down);
+}
+
+/* ── The verdict strip (signature element) ── */
+.verdict {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 16px 0;
+}
+
+.verdict .cell {
+  background: var(--panel-2);
+  border-right: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.verdict .cell:last-child {
+  border-right: none;
+}
+
+.verdict .k {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.verdict .v {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Diagnostics ── */
+.diag {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--down);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+
+.diag .code {
+  color: var(--accent);
+}
+
+.note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.error-note {
+  color: var(--down);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
