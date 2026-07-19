@@ -92,7 +92,7 @@ export interface BacktestResultDto {
 
 export interface RunResponse {
   ok: boolean
-  runId: number | null
+  runId?: number | null
   diagnostics: DiagnosticDto[]
   runError: string | null
   result: BacktestResultDto | null
@@ -134,6 +134,13 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
+    }).then((r) => json<RunResponse>(r)),
+
+  runAdhocBacktest: (source: string): Promise<RunResponse> =>
+    fetch('/api/backtest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source }),
     }).then((r) => json<RunResponse>(r)),
 
   getCandles: (
