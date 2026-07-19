@@ -257,6 +257,394 @@ public final class Indicators {
         return out;
     }
 
+
+    // ═══════════════════ Expansion set (indicators 8-20+) ═══════════════
+    // Same rules as the original seven: reference formulas, NaN warm-up
+    // prefixes, O(n) or O(n*p) single passes (p is small; 214k*200 ops is
+    // milliseconds), and windowed helpers that yield NaN whenever their
+    // window still contains NaN — which is what lets HMA chain WMAs over a
+    // NaN-prefixed input correctly.
+
+    // ── Weighted / Hull moving averages ─────────────────────────────────
+
+    /** Linearly weighted MA: weight i+1 on the i-th oldest value. */
+    public static double[] wma(double[] src, int period) {
+        requirePeriod(period);
+        double[] out = nanArray(src.length);
+        double denom = period * (period + 1) / 2.0;
+        for (int i = period - 1; i < src.length; i++) {
+            double sum = 0;
+            boolean valid = true;
+            for (int j = 0; j < period; j++) {
+                double v = src[i - period + 1 + j];
+                if (Double.isNaN(v)) {
+                    valid = false;
+                    break;
+                }
+                sum += (j + 1) * v;
+            }
+            out[i] = valid ? sum / denom : Double.NaN;
+        }
+        return out;
+    }
+
+    /** Hull MA: WMA(sqrt(p)) of (2*WMA(p/2) - WMA(p)) — fast AND smooth.
+     *  For a perfectly linear series the extrapolation is exact, which the
+     *  tests exploit as a hand-checkable property. */
+    public static double[] hma(double[] src, int period) {
+        requirePeriod(period);
+        int half = Math.max(1, period / 2);
+        int sqrt = Math.max(1, (int) Math.round(Math.sqrt(period)));
+        double[] fast = wma(src, half);
+        double[] slow = wma(src, period);
+        double[] raw = nanArray(src.length);
+        for (int i = 0; i < src.length; i++) {
+            raw[i] = 2 * fast[i] - slow[i]; // NaN propagates
+        }
+        return wma(raw, sqrt); // NaN-window tolerance makes chaining safe
+    }
+
+    // ── Momentum family ─────────────────────────────────────────────────
+
+    /** Rate of change, percent: 100 * (x - x[p]) / x[p]. */
+    public static double[] roc(double[] src, int period) {
+        requirePeriod(period);
+        double[] out = nanArray(src.length);
+        for (int i = period; i < src.length; i++) {
+            out[i] = src[i - period] == 0 ? Double.NaN
+                    : (src[i] - src[i - period]) / src[i - period] * 100.0;
+        }
+        return out;
+    }
+
+    /** Raw momentum: x - x[p]. */
+    public static double[] mom(double[] src, int period) {
+        requirePeriod(period);
+        double[] out = nanArray(src.length);
+        for (int i = period; i < src.length; i++) {
+            out[i] = src[i] - src[i - period];
+        }
+        return out;
+    }
+
+    // ── Stochastic / Williams / CCI / MFI ───────────────────────────────
+
+    /** Stochastic %K: where the close sits in the k-period high-low range.
+     *  A zero range (flat window) reads the neutral 50. */
+    public static double[] stochK(double[] high, double[] low, double[] close,
+                                  int kPeriod) {
+        requirePeriod(kPeriod);
+        double[] out = nanArray(close.length);
+        for (int i = kPeriod - 1; i < close.length; i++) {
+            double hh = Double.NEGATIVE_INFINITY;
+            double ll = Double.POSITIVE_INFINITY;
+            for (int j = i - kPeriod + 1; j <= i; j++) {
+                hh = Math.max(hh, high[j]);
+                ll = Math.min(ll, low[j]);
+            }
+            out[i] = hh == ll ? 50 : (close[i] - ll) / (hh - ll) * 100.0;
+        }
+        return out;
+    }
+
+    /** Stochastic %D: an SMA of %K (NaN-tolerant window). */
+    public static double[] stochD(double[] high, double[] low, double[] close,
+                                  int kPeriod, int dSmooth) {
+        return smaNanTolerant(stochK(high, low, close, kPeriod), dSmooth);
+    }
+
+    /** Williams %R: like %K but measured from the top, range 0..-100. */
+    public static double[] willr(double[] high, double[] low, double[] close,
+                                 int period) {
+        requirePeriod(period);
+        double[] out = nanArray(close.length);
+        for (int i = period - 1; i < close.length; i++) {
+            double hh = Double.NEGATIVE_INFINITY;
+            double ll = Double.POSITIVE_INFINITY;
+            for (int j = i - period + 1; j <= i; j++) {
+                hh = Math.max(hh, high[j]);
+                ll = Math.min(ll, low[j]);
+            }
+            out[i] = hh == ll ? -50 : -(hh - close[i]) / (hh - ll) * 100.0;
+        }
+        return out;
+    }
+
+    /** Commodity Channel Index over typical price, Lambert's 0.015 factor. */
+    public static double[] cci(double[] high, double[] low, double[] close,
+                               int period) {
+        requirePeriod(period);
+        int n = close.length;
+        double[] tp = new double[n];
+        for (int i = 0; i < n; i++) {
+            tp[i] = (high[i] + low[i] + close[i]) / 3.0;
+        }
+        double[] out = nanArray(n);
+        for (int i = period - 1; i < n; i++) {
+            double mean = 0;
+            for (int j = i - period + 1; j <= i; j++) {
+                mean += tp[j];
+            }
+            mean /= period;
+            double dev = 0;
+            for (int j = i - period + 1; j <= i; j++) {
+                dev += Math.abs(tp[j] - mean);
+            }
+            dev /= period;
+            out[i] = dev == 0 ? 0 : (tp[i] - mean) / (0.015 * dev);
+        }
+        return out;
+    }
+
+    /** Money Flow Index: volume-weighted RSI over typical price. All-up
+     *  window -> 100; dead window -> 50. */
+    public static double[] mfi(double[] high, double[] low, double[] close,
+                               double[] volume, int period) {
+        requirePeriod(period);
+        int n = close.length;
+        double[] out = nanArray(n);
+        double[] tp = new double[n];
+        for (int i = 0; i < n; i++) {
+            tp[i] = (high[i] + low[i] + close[i]) / 3.0;
+        }
+        for (int i = period; i < n; i++) {
+            double pos = 0;
+            double neg = 0;
+            for (int j = i - period + 1; j <= i; j++) {
+                double flow = tp[j] * volume[j];
+                if (tp[j] > tp[j - 1]) {
+                    pos += flow;
+                } else if (tp[j] < tp[j - 1]) {
+                    neg += flow;
+                }
+            }
+            out[i] = (pos == 0 && neg == 0) ? 50
+                    : neg == 0 ? 100
+                    : 100 - 100 / (1 + pos / neg);
+        }
+        return out;
+    }
+
+    // ── Wilder's directional system (ADX / DI) ──────────────────────────
+
+    /** +DI: Wilder-smoothed positive directional movement over ATR. */
+    public static double[] plusDi(double[] high, double[] low, double[] close,
+                                  int period) {
+        return dmi(high, low, close, period)[0];
+    }
+
+    public static double[] minusDi(double[] high, double[] low, double[] close,
+                                   int period) {
+        return dmi(high, low, close, period)[1];
+    }
+
+    /** ADX: Wilder smoothing of DX, itself the normalized DI spread. First
+     *  value at index 2p-1 — the double smoothing chain is why the registry
+     *  charges it the largest warm-up of any indicator. */
+    public static double[] adx(double[] high, double[] low, double[] close,
+                               int period) {
+        return dmi(high, low, close, period)[2];
+    }
+
+    private static double[][] dmi(double[] high, double[] low, double[] close,
+                                  int period) {
+        requirePeriod(period);
+        int n = close.length;
+        double[] pDi = nanArray(n);
+        double[] mDi = nanArray(n);
+        double[] adx = nanArray(n);
+        if (n <= period) {
+            return new double[][]{pDi, mDi, adx};
+        }
+        // Raw TR / +DM / -DM per bar (index >= 1).
+        double smTr = 0;
+        double smPdm = 0;
+        double smMdm = 0;
+        for (int i = 1; i <= period; i++) {
+            smTr += trueRange(high, low, close, i);
+            double up = high[i] - high[i - 1];
+            double down = low[i - 1] - low[i];
+            smPdm += (up > down && up > 0) ? up : 0;
+            smMdm += (down > up && down > 0) ? down : 0;
+        }
+        double[] dx = nanArray(n);
+        for (int i = period; i < n; i++) {
+            if (i > period) {
+                // Wilder running smooth: sum - sum/p + current.
+                smTr = smTr - smTr / period + trueRange(high, low, close, i);
+                double up = high[i] - high[i - 1];
+                double down = low[i - 1] - low[i];
+                smPdm = smPdm - smPdm / period + ((up > down && up > 0) ? up : 0);
+                smMdm = smMdm - smMdm / period + ((down > up && down > 0) ? down : 0);
+            }
+            pDi[i] = smTr == 0 ? 0 : 100 * smPdm / smTr;
+            mDi[i] = smTr == 0 ? 0 : 100 * smMdm / smTr;
+            double sum = pDi[i] + mDi[i];
+            dx[i] = sum == 0 ? 0 : 100 * Math.abs(pDi[i] - mDi[i]) / sum;
+        }
+        // ADX: seed with the average of the first p DX values, then Wilder.
+        int seedEnd = 2 * period - 1;
+        if (seedEnd < n) {
+            double seed = 0;
+            for (int i = period; i <= seedEnd; i++) {
+                seed += dx[i];
+            }
+            double a = seed / period;
+            adx[seedEnd] = a;
+            for (int i = seedEnd + 1; i < n; i++) {
+                a = (a * (period - 1) + dx[i]) / period;
+                adx[i] = a;
+            }
+        }
+        return new double[][]{pDi, mDi, adx};
+    }
+
+    private static double trueRange(double[] high, double[] low, double[] close,
+                                    int i) {
+        return Math.max(high[i] - low[i], Math.max(
+                Math.abs(high[i] - close[i - 1]),
+                Math.abs(low[i] - close[i - 1])));
+    }
+
+    // ── SuperTrend ──────────────────────────────────────────────────────
+
+    /**
+     * SuperTrend line value: in an uptrend the line is the carried lower
+     * band (below price), in a downtrend the carried upper band (above).
+     * Price crossing the carried band flips the trend — the classic
+     * ratchet. Output is price-comparable, so strategies write
+     * {@code CLOSE > SUPERTREND(10, 3)}.
+     */
+    public static double[] supertrend(double[] high, double[] low,
+                                      double[] close, int period, double mult) {
+        requirePeriod(period);
+        int n = close.length;
+        double[] out = nanArray(n);
+        double[] atr = atr(high, low, close, period);
+        double fUpper = Double.NaN;
+        double fLower = Double.NaN;
+        boolean up = true;
+        for (int i = period - 1; i < n; i++) {
+            double mid = (high[i] + low[i]) / 2.0;
+            double upper = mid + mult * atr[i];
+            double lower = mid - mult * atr[i];
+            if (Double.isNaN(fUpper)) { // first bar with ATR
+                fUpper = upper;
+                fLower = lower;
+                up = close[i] >= mid;
+            } else {
+                // Band ratchet: bands only tighten unless price broke them.
+                fUpper = (upper < fUpper || close[i - 1] > fUpper) ? upper : fUpper;
+                fLower = (lower > fLower || close[i - 1] < fLower) ? lower : fLower;
+                if (up && close[i] < fLower) {
+                    up = false;
+                } else if (!up && close[i] > fUpper) {
+                    up = true;
+                }
+            }
+            out[i] = up ? fLower : fUpper;
+        }
+        return out;
+    }
+
+    // ── Volume ──────────────────────────────────────────────────────────
+
+    /** On-balance volume: cumulative signed volume, anchored at 0. */
+    public static double[] obv(double[] close, double[] volume) {
+        double[] out = new double[close.length];
+        if (close.length == 0) {
+            return out;
+        }
+        out[0] = 0;
+        for (int i = 1; i < close.length; i++) {
+            double sign = Math.signum(close[i] - close[i - 1]);
+            out[i] = out[i - 1] + sign * volume[i];
+        }
+        return out;
+    }
+
+    // ── Channels & window stats ─────────────────────────────────────────
+
+    public static double[] donchianUpper(double[] high, int period) {
+        return windowExtreme(high, period, true);
+    }
+
+    public static double[] donchianLower(double[] low, int period) {
+        return windowExtreme(low, period, false);
+    }
+
+    /** Highest value of a series over the window — with lookback, the
+     *  breakout primitive: {@code CLOSE > HIGHEST(HIGH, 20)[1]}. */
+    public static double[] highest(double[] src, int period) {
+        return windowExtreme(src, period, true);
+    }
+
+    public static double[] lowest(double[] src, int period) {
+        return windowExtreme(src, period, false);
+    }
+
+    /** Population standard deviation over the window (the Bollinger sigma,
+     *  exposed directly). */
+    public static double[] stddev(double[] src, int period) {
+        requirePeriod(period);
+        double[] out = nanArray(src.length);
+        double sum = 0;
+        double sumSq = 0;
+        for (int i = 0; i < src.length; i++) {
+            sum += src[i];
+            sumSq += src[i] * src[i];
+            if (i >= period) {
+                sum -= src[i - period];
+                sumSq -= src[i - period] * src[i - period];
+            }
+            if (i >= period - 1) {
+                double mean = sum / period;
+                out[i] = Math.sqrt(Math.max(0, sumSq / period - mean * mean));
+            }
+        }
+        return out;
+    }
+
+    // ── Shared windowed helpers ─────────────────────────────────────────
+
+    private static double[] windowExtreme(double[] src, int period, boolean max) {
+        requirePeriod(period);
+        double[] out = nanArray(src.length);
+        for (int i = period - 1; i < src.length; i++) {
+            double best = max ? Double.NEGATIVE_INFINITY : Double.POSITIVE_INFINITY;
+            boolean valid = true;
+            for (int j = i - period + 1; j <= i; j++) {
+                if (Double.isNaN(src[j])) {
+                    valid = false;
+                    break;
+                }
+                best = max ? Math.max(best, src[j]) : Math.min(best, src[j]);
+            }
+            out[i] = valid ? best : Double.NaN;
+        }
+        return out;
+    }
+
+    /** SMA that yields NaN while its window still contains NaN — for
+     *  smoothing already-NaN-prefixed series (stochD over stochK). */
+    private static double[] smaNanTolerant(double[] src, int period) {
+        requirePeriod(period);
+        double[] out = nanArray(src.length);
+        for (int i = period - 1; i < src.length; i++) {
+            double sum = 0;
+            boolean valid = true;
+            for (int j = i - period + 1; j <= i; j++) {
+                if (Double.isNaN(src[j])) {
+                    valid = false;
+                    break;
+                }
+                sum += src[j];
+            }
+            out[i] = valid ? sum / period : Double.NaN;
+        }
+        return out;
+    }
+
     // ── Shared ──────────────────────────────────────────────────────────
 
     private static double[] nanArray(int n) {

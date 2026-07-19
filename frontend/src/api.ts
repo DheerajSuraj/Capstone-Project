@@ -59,6 +59,17 @@ export interface CurvePoint {
   equity: number
 }
 
+/** Columnar OHLCV from /api/candles — six parallel arrays, index i across
+ *  all six is one bar (mirrors the backend's CandleSeries). */
+export interface CandleColumns {
+  t: number[]
+  o: number[]
+  h: number[]
+  l: number[]
+  c: number[]
+  v: number[]
+}
+
 export interface BacktestResultDto {
   strategyName: string
   symbol: string
@@ -124,4 +135,15 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     }).then((r) => json<RunResponse>(r)),
+
+  getCandles: (
+    symbol: string,
+    timeframe: string,
+    from: string,
+    to: string,
+  ): Promise<CandleColumns> =>
+    fetch(
+      `/api/candles?symbol=${symbol}&timeframe=${timeframe}` +
+        `&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    ).then((r) => json<CandleColumns>(r)),
 }

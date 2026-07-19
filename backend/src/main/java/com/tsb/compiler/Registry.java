@@ -123,6 +123,56 @@ public final class Registry {
                             Param.period("slow"), Param.period("signal")),
                     c -> 3 * ((int) c[1] + (int) c[2])),
 
+            // ── Expansion set: oscillators ──────────────────────────────
+            indicator("STOCH_K", List.of(Param.period("kPeriod")),
+                    c -> (int) c[0]),
+            indicator("STOCH_D", List.of(Param.period("kPeriod"),
+                            Param.period("dSmooth")),
+                    c -> (int) c[0] + (int) c[1]),
+            indicator("WILLR", List.of(Param.period("period")),
+                    c -> (int) c[0]),
+            indicator("CCI", List.of(Param.period("period")),
+                    c -> (int) c[0]),
+            indicator("MFI", List.of(Param.period("period")),
+                    c -> (int) c[0] + 1),
+            indicator("ROC", List.of(Param.series("source"), Param.period("period")),
+                    c -> (int) c[0] + 1),
+            indicator("MOM", List.of(Param.series("source"), Param.period("period")),
+                    c -> (int) c[0] + 1),
+
+            // ── Expansion set: trend ────────────────────────────────────
+            // ADX chains two Wilder smoothings -> the largest warm-up here.
+            indicator("ADX", List.of(Param.period("period")),
+                    c -> 2 * (int) c[0] + 1),
+            indicator("PLUS_DI", List.of(Param.period("period")),
+                    c -> (int) c[0] + 1),
+            indicator("MINUS_DI", List.of(Param.period("period")),
+                    c -> (int) c[0] + 1),
+            indicator("SUPERTREND", List.of(Param.period("period"),
+                            Param.constant("multiplier")),
+                    c -> (int) c[0] + 1),
+
+            // ── Expansion set: moving averages ──────────────────────────
+            indicator("WMA", List.of(Param.series("source"), Param.period("period")),
+                    c -> (int) c[0]),
+            indicator("HMA", List.of(Param.series("source"), Param.period("period")),
+                    c -> (int) c[0] + (int) Math.round(Math.sqrt(c[0]))),
+
+            // ── Expansion set: channels & window stats ──────────────────
+            indicator("DONCHIAN_UPPER", List.of(Param.period("period")),
+                    c -> (int) c[0]),
+            indicator("DONCHIAN_LOWER", List.of(Param.period("period")),
+                    c -> (int) c[0]),
+            indicator("STDDEV", List.of(Param.series("source"), Param.period("period")),
+                    c -> (int) c[0]),
+            indicator("HIGHEST", List.of(Param.series("source"), Param.period("period")),
+                    c -> (int) c[0]),
+            indicator("LOWEST", List.of(Param.series("source"), Param.period("period")),
+                    c -> (int) c[0]),
+
+            // ── Expansion set: volume ───────────────────────────────────
+            indicator("OBV", List.of(), c -> 1),
+
             // ── Functions (interpreted per bar) ─────────────────────────
             function("CROSSOVER", List.of(Param.numeric("a"), Param.numeric("b")),
                     true, 1),

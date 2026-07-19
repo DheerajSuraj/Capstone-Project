@@ -65,6 +65,45 @@ public final class IndicatorBank {
             case "MACD_SIGNAL" -> Indicators.macdSignal(s.close(),
                     a.get(0).intValue(), a.get(1).intValue(),
                     a.get(2).intValue());
+
+            // ── Expansion set ───────────────────────────────────────────
+            case "STOCH_K" -> Indicators.stochK(s.high(), s.low(), s.close(),
+                    a.get(0).intValue());
+            case "STOCH_D" -> Indicators.stochD(s.high(), s.low(), s.close(),
+                    a.get(0).intValue(), a.get(1).intValue());
+            case "WILLR" -> Indicators.willr(s.high(), s.low(), s.close(),
+                    a.get(0).intValue());
+            case "CCI" -> Indicators.cci(s.high(), s.low(), s.close(),
+                    a.get(0).intValue());
+            case "MFI" -> Indicators.mfi(s.high(), s.low(), s.close(),
+                    s.volume(), a.get(0).intValue());
+            case "ROC" -> Indicators.roc(column(s, instance.source()),
+                    a.get(0).intValue());
+            case "MOM" -> Indicators.mom(column(s, instance.source()),
+                    a.get(0).intValue());
+            case "ADX" -> Indicators.adx(s.high(), s.low(), s.close(),
+                    a.get(0).intValue());
+            case "PLUS_DI" -> Indicators.plusDi(s.high(), s.low(), s.close(),
+                    a.get(0).intValue());
+            case "MINUS_DI" -> Indicators.minusDi(s.high(), s.low(), s.close(),
+                    a.get(0).intValue());
+            case "SUPERTREND" -> Indicators.supertrend(s.high(), s.low(),
+                    s.close(), a.get(0).intValue(), a.get(1));
+            case "WMA" -> Indicators.wma(column(s, instance.source()),
+                    a.get(0).intValue());
+            case "HMA" -> Indicators.hma(column(s, instance.source()),
+                    a.get(0).intValue());
+            case "DONCHIAN_UPPER" -> Indicators.donchianUpper(s.high(),
+                    a.get(0).intValue());
+            case "DONCHIAN_LOWER" -> Indicators.donchianLower(s.low(),
+                    a.get(0).intValue());
+            case "STDDEV" -> Indicators.stddev(column(s, instance.source()),
+                    a.get(0).intValue());
+            case "HIGHEST" -> Indicators.highest(column(s, instance.source()),
+                    a.get(0).intValue());
+            case "LOWEST" -> Indicators.lowest(column(s, instance.source()),
+                    a.get(0).intValue());
+            case "OBV" -> Indicators.obv(s.close(), s.volume());
             default -> throw new IllegalStateException(
                     "indicator '" + instance.name() + "' is in the registry "
                             + "but not in IndicatorBank — add it here too");

@@ -2,9 +2,13 @@ import { useEffect, useState } from 'react'
 import {
   api,
   type BacktestResultDto,
+  type CandleColumns,
+  type CurvePoint,
   type DiagnosticDto,
   type StrategyDto,
 } from './api'
+import PriceChart from './charts/PriceChart'
+import EquityChart from './charts/EquityChart'
 
 const STARTER = `strategy "My Strategy" {
     symbol = BTCUSDT
@@ -34,6 +38,15 @@ const fmt = (n: number, digits = 2) =>
 /** PnL class: the only place the UI hands out green/red. */
 const pnlClass = (n: number) => (n > 0 ? 'up' : n < 0 ? 'down' : '')
 
+/** BUY & HOLD baseline: the same starting capital riding the raw close.
+ *  The humbling line — a strategy that can't beat just-holding should
+ *  have to look at that fact. */
+const buyAndHold = (candles: CandleColumns, capital: number): CurvePoint[] =>
+  candles.c.map((close, i) => ({
+    t: candles.t[i],
+    equity: (capital * close) / candles.c[0],
+  }))
+
 export default function App() {
   const [strategies, setStrategies] = useState<StrategyDto[]>([])
   const [name, setName] = useState('')
@@ -43,6 +56,7 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [runError, setRunError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResultDto | null>(null)
+  const [candles, setCandles] = useState<CandleColumns | null>(null)
 
   const refresh = () => api.listStrategies().then(setStrategies)
 
@@ -82,12 +96,24 @@ export default function App() {
   const run = async (s: StrategyDto) => {
     setBusy(true)
     setResult(null)
+    setCandles(null)
     setRunError(null)
     setDiagnostics([])
     try {
       const res = await api.runVersion(s.id, s.latestVersion)
-      if (res.ok && res.result) setResult(res.result)
-      else if (res.runError) setRunError(res.runError)
+      if (res.ok && res.result) {
+        setResult(res.result)
+        // Candles for exactly the run's window, so markers land on their bars.
+        api
+          .getCandles(
+            res.result.symbol,
+            res.result.timeframe,
+            res.result.firstBarTime,
+            res.result.lastBarTime,
+          )
+          .then(setCandles)
+          .catch(() => setCandles(null))
+      } else if (res.runError) setRunError(res.runError)
       else setDiagnostics(res.diagnostics)
     } finally {
       setBusy(false)
@@ -259,6 +285,16 @@ export default function App() {
               <div className="v">{fmt(result.totalFees)}</div>
             </div>
           </div>
+
+          {candles && (
+            <>
+              <PriceChart candles={candles} trades={result.trades} />
+              <EquityChart
+                curve={result.equityCurve}
+                benchmark={buyAndHold(candles, result.initialCapital)}
+              />
+            </>
+          )}
 
           <table>
             <thead>
