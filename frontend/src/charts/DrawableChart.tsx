@@ -72,9 +72,10 @@ export default function DrawableChart({
     chartRef.current = chart
     seriesRef.current = series
 
-    let socket: WebSocket | null = null
     let disposed = false
+    let socket: WebSocket | null = null
 
+    // ── history from OUR backend (independent of Binance) ───────────────
     fetch(`/api/candles?symbol=${symbol}&timeframe=${timeframe}`)
       .then((r) => r.json())
       .then((cols: { t: number[]; o: number[]; h: number[]; l: number[]; c: number[] }) => {
@@ -89,25 +90,40 @@ export default function DrawableChart({
         chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 700), to: n + 5 })
         redraw()
       })
-      .catch(() => setStatus('history unavailable'))
+      .catch(() => { if (!disposed) setStatus('history unavailable') })
 
-    try {
-      socket = new WebSocket(
+    // ── live forming candle via Binance ws ──────────────────────────────
+    // Open on the next tick: StrictMode's synchronous unmount runs first and
+    // sets disposed=true, so the throwaway first mount never opens a socket.
+    // Only the surviving mount reaches here. This is what stops the
+    // open/close churn ("ping received after close" / "closed before
+    // established").
+    const openTimer = setTimeout(() => {
+      if (disposed) return
+      const s = new WebSocket(
         `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${timeframe}`,
       )
-      socket.onopen = () => setStatus('live')
-      socket.onerror = () => setStatus('offline — history only, drawings still work')
-      socket.onmessage = (ev) => {
-        const k = JSON.parse(ev.data).k
-        series.update({
-          time: Math.floor(k.t / 1000) as UTCTimestamp,
-          open: parseFloat(k.o), high: parseFloat(k.h),
-          low: parseFloat(k.l), close: parseFloat(k.c),
-        })
+      socket = s
+      s.onopen = () => {
+        if (!disposed) setStatus('live')
       }
-    } catch {
-      setStatus('offline — history only, drawings still work')
-    }
+      s.onmessage = (ev) => {
+        if (disposed) return
+        try {
+          const k = JSON.parse(ev.data).k
+          seriesRef.current?.update({
+            time: Math.floor(k.t / 1000) as UTCTimestamp,
+            open: parseFloat(k.o), high: parseFloat(k.h),
+            low: parseFloat(k.l), close: parseFloat(k.c),
+          })
+        } catch {
+          /* ignore a malformed frame */
+        }
+      }
+      s.onerror = () => {
+        if (!disposed) setStatus('offline — history only, drawings still work')
+      }
+    }, 0)
 
     chart.timeScale().subscribeVisibleLogicalRangeChange(() => redraw())
 
@@ -125,8 +141,19 @@ export default function DrawableChart({
 
     return () => {
       disposed = true
+      clearTimeout(openTimer)
       obs.disconnect()
-      socket?.close()
+      if (socket) {
+        // detach handlers BEFORE closing so a late ping/close can't fire
+        // onmessage/onerror against a torn-down chart
+        socket.onopen = null
+        socket.onmessage = null
+        socket.onerror = null
+        socket.onclose = null
+        // only close a socket that actually finished opening; closing a
+        // CONNECTING socket is what logged "closed before established"
+        if (socket.readyState === WebSocket.OPEN) socket.close(1000)
+      }
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
