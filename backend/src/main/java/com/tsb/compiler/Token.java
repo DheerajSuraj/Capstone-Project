@@ -97,6 +97,7 @@ public record Token(
      *  output read much better with this than the default record toString. */
     @Override
     public String toString() {
-        return type + "('" + lexeme + "')@" + span;
+        return type + "('" + lexeme + "')@;" +
+                "==" + span;
     }
 }
