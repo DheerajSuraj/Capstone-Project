@@ -2,6 +2,8 @@
 // this file IS the frontend's copy of the contract, so a backend DTO
 // change should be mirrored here deliberately, not discovered at runtime.
 
+import { getAccessToken, refresh } from './auth/api'
+
 export interface SpanDto {
   startLine: number
   startCol: number
@@ -98,59 +100,133 @@ export interface RunResponse {
   result: BacktestResultDto | null
 }
 
-async function json<T>(res: Response): Promise<T> {
+export interface CompileResponse {
+  ok: boolean
+  diagnostics: DiagnosticDto[]
+}
+
+/**
+ * Several requests can be in flight at once, so several can hit an expired
+ * token at once. Each must NOT refresh independently: the first would
+ * rotate the refresh token and the rest would replay a spent one, which the
+ * backend treats as theft and answers by revoking the whole session. One
+ * shared refresh, however many callers ask for it.
+ */
+let refreshInFlight: Promise<unknown> | null = null
+
+function refreshOnce(): Promise<unknown> {
+  if (!refreshInFlight) {
+    refreshInFlight = refresh().finally(() => {
+      refreshInFlight = null
+    })
+  }
+  return refreshInFlight
+}
+
+/**
+ * Every backend call goes through here so three things are always true:
+ * the access token is attached, the refresh cookie travels, and an expired
+ * token is renewed once and the request replayed rather than surfacing as
+ * a failure the user sees.
+ *
+ * That last part matters more than it looks. Access tokens last fifteen
+ * minutes, so without it the app works fine and then appears to break at
+ * random, mid-backtest, with no pattern to reproduce.
+ */
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  allowRetry = true,
+): Promise<T> {
+  const token = getAccessToken()
+  const headers = new Headers(init.headers)
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  if (init.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  const res = await fetch(path, {
+    ...init,
+    headers,
+    // Carries the httpOnly refresh cookie. Harmless on the public
+    // endpoints, essential on /api/auth/refresh.
+    credentials: 'include',
+  })
+
+  if (res.status === 401 && allowRetry && token) {
+    try {
+      await refreshOnce()
+    } catch {
+      throw new Error('Your session has expired. Please sign in again.')
+    }
+    return request<T>(path, init, false)
+  }
+
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(`${res.status}: ${text || res.statusText}`)
+    // The backend reports errors as {code, message}. Prefer that message
+    // over a bare status line — it was written for a person to read.
+    let message = `${res.status}: ${text || res.statusText}`
+    try {
+      const body = JSON.parse(text)
+      if (typeof body?.message === 'string') message = body.message
+    } catch {
+      /* not JSON — keep the status line */
+    }
+    throw new Error(message)
   }
+
   return res.json() as Promise<T>
 }
 
 export const api = {
+  compile: (source: string): Promise<CompileResponse> =>
+    request<CompileResponse>('/api/compile', {
+      method: 'POST',
+      body: JSON.stringify({ source }),
+    }),
+
   listStrategies: (): Promise<StrategyDto[]> =>
-    fetch('/api/strategies').then((r) => json<StrategyDto[]>(r)),
+    request<StrategyDto[]>('/api/strategies'),
 
   createStrategy: (name: string, source: string): Promise<SaveResponse> =>
-    fetch('/api/strategies', {
+    request<SaveResponse>('/api/strategies', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, source }),
-    }).then((r) => json<SaveResponse>(r)),
+    }),
 
   addVersion: (strategyId: number, source: string): Promise<SaveResponse> =>
-    fetch(`/api/strategies/${strategyId}/versions`, {
+    request<SaveResponse>(`/api/strategies/${strategyId}/versions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source }),
-    }).then((r) => json<SaveResponse>(r)),
+    }),
 
   getVersionSource: (strategyId: number, version: number): Promise<string> =>
-    fetch(`/api/strategies/${strategyId}/versions/${version}`)
-      .then((r) => json<{ source: string }>(r))
-      .then((v) => v.source),
+    request<{ source: string }>(
+      `/api/strategies/${strategyId}/versions/${version}`,
+    ).then((v) => v.source),
 
   runVersion: (strategyId: number, version: number): Promise<RunResponse> =>
-    fetch(`/api/strategies/${strategyId}/versions/${version}/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    }).then((r) => json<RunResponse>(r)),
+    request<RunResponse>(
+      `/api/strategies/${strategyId}/versions/${version}/run`,
+      { method: 'POST', body: JSON.stringify({}) },
+    ),
 
   runAdhocBacktest: (source: string): Promise<RunResponse> =>
-    fetch('/api/backtest', {
+    request<RunResponse>('/api/backtest', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source }),
-    }).then((r) => json<RunResponse>(r)),
+    }),
 
+  // Public endpoint — works signed out, which is what the landing chart needs.
   getCandles: (
     symbol: string,
     timeframe: string,
     from: string,
     to: string,
   ): Promise<CandleColumns> =>
-    fetch(
+    request<CandleColumns>(
       `/api/candles?symbol=${symbol}&timeframe=${timeframe}` +
         `&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-    ).then((r) => json<CandleColumns>(r)),
+    ),
 }

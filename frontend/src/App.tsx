@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import HomeView from './views/HomeView'
 import BuilderView from './views/BuilderView'
 import StrategiesView from './views/StrategiesView'
 import CompetitionView from './views/CompetitionView'
+import { useAuth } from './auth'
+import AuthOverlay from './auth/AuthOverlay'
 
 const STARTER = `strategy "My Strategy" {
     symbol = BTCUSDT
@@ -32,18 +34,45 @@ const NAV: { view: View; glyph: string; label: string }[] = [
   { view: 'competition', glyph: '⚑', label: 'Competitions' },
 ]
 
+/** The live chart reads public candle data; everything else is owned. */
+const isPublic = (view: View) => view === 'home'
+
 export default function App() {
+  const { status, user, signOut } = useAuth()
+
   const [view, setView] = useState<View>('home')
   const [source, setSource] = useState(STARTER)
   const [name, setName] = useState('')
   const [editingId, setEditingId] = useState<number | null>(null)
-  const [authNote, setAuthNote] = useState(false)
+  const [authOpen, setAuthOpen] = useState(false)
+  const [pendingView, setPendingView] = useState<View | null>(null)
+
+  // Send them where they were headed once they sign in, rather than making
+  // them find the button again.
+  useEffect(() => {
+    if (status === 'authenticated' && pendingView) {
+      setView(pendingView)
+      setPendingView(null)
+    }
+  }, [status, pendingView])
 
   const editStrategy = (id: number, strategyName: string, src: string) => {
     setEditingId(id)
     setName(strategyName)
     setSource(src)
     setView('builder')
+  }
+
+  const go = (target: View) => {
+    if (!isPublic(target) && status !== 'authenticated') {
+      setPendingView(target)
+      setAuthOpen(true)
+      return
+    }
+    if (target === 'builder' && view !== 'builder') {
+      setEditingId(null)
+    }
+    setView(target)
   }
 
   return (
@@ -54,10 +83,20 @@ export default function App() {
           <span className="tag">Trading Strategy Builder</span>
         </div>
         <div>
-          <button className="ghost" onClick={() => setAuthNote(!authNote)}>
-            Log in / Sign up
-          </button>
-          {authNote && <span className="note" style={{ marginLeft: 10 }}>accounts coming soon</span>}
+          {status === 'authenticated' ? (
+            <>
+              <span className="note" style={{ marginRight: 10 }}>
+                {user?.username}
+              </span>
+              <button className="ghost" onClick={signOut}>
+                Sign out
+              </button>
+            </>
+          ) : (
+            <button className="ghost" onClick={() => setAuthOpen(true)}>
+              Log in / Sign up
+            </button>
+          )}
         </div>
       </header>
 
@@ -66,12 +105,7 @@ export default function App() {
           <button
             key={item.view}
             className={`rail-item ${view === item.view ? 'active' : ''}`}
-            onClick={() => {
-              if (item.view === 'builder' && view !== 'builder') {
-                setEditingId(null)
-              }
-              setView(item.view)
-            }}
+            onClick={() => go(item.view)}
           >
             <span className="glyph">{item.glyph}</span>
             <span className="label">{item.label}</span>
@@ -94,6 +128,14 @@ export default function App() {
         {view === 'strategies' && <StrategiesView onEdit={editStrategy} />}
         {view === 'competition' && <CompetitionView />}
       </main>
+
+      <AuthOverlay
+        open={authOpen}
+        onClose={() => {
+          setAuthOpen(false)
+          setPendingView(null)
+        }}
+      />
     </div>
   )
 }

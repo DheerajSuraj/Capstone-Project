@@ -51,3 +51,13 @@ management:
     health:
       probes:
         enabled: true            # /actuator/health/liveness + /readiness — used later by the VM uptime cron (roadmap §13.2)
+tsb:
+  auth:
+    jwt-secret: auDPxFQ1/3VzyWkUUa7N26ExDRxN/DO2h72n/TpXIw6Ra5Y7LePb7iNgYZmjPkLv
+    access-token-ttl: 15m
+    refresh-token-ttl: 30d
+    cookie-secure: false          # true in production, always
+    google-client-id: 372892933487-3tt561gk7j5c4cu4r63vbfqvm3r2n6gv.apps.googleusercontent.com
+    max-login-attempts: 5
+    login-attempt-window: 15m
+    allowed-origins: http://localhost:5173
