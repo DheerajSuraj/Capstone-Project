@@ -39,14 +39,29 @@ import java.util.List;
  */
 public final class Backtester {
 
-    /** What a rule decided at a close, awaiting the next open. */
+    /** What a rule decided at a close, awaiting the next open. The origin
+     *  (which rule, which statement, which bar) is carried only so an
+     *  observer can be told what became of it; it plays no part in filling. */
     private sealed interface Pending {
-        record Buy(StrategyAst.Sizing sizing) implements Pending {}
-        record Sell(StrategyAst.Sizing sizing) implements Pending {}
+        Origin origin();
+
+        record Buy(StrategyAst.Sizing sizing, Origin origin) implements Pending {}
+        record Sell(StrategyAst.Sizing sizing, Origin origin) implements Pending {}
     }
+
+    private record Origin(int bar, int rule, int stmt) {}
 
     public BacktestResult run(CompiledStrategy strategy, CandleSeries series,
                               ExchangeRules rules) {
+        return run(strategy, series, rules, BarObserver.NONE);
+    }
+
+    /**
+     * Same run, with an observer told what the engine did at each close and
+     * to each order. The observer cannot influence the run.
+     */
+    public BacktestResult run(CompiledStrategy strategy, CandleSeries series,
+                              ExchangeRules rules, BarObserver observer) {
         int n = series.size();
         double[] equity = new double[n];
         List<Trade> trades = new ArrayList<>();
@@ -88,11 +103,15 @@ public final class Backtester {
             for (Pending order : pending) {
                 if (order instanceof Pending.Buy b) {
                     if (qty > 0) {
+                        report(observer, order, i,
+                                BarObserver.FillOutcome.IGNORED_ALREADY_LONG);
                         continue; // single position: ignore add-ons
                     }
                     double desired = desiredBuyQty(b.sizing(), cash, open, fee);
                     double rounded = rules.roundQty(desired);
                     if (rounded <= 0 || !rules.meetsMinNotional(rounded, open)) {
+                        report(observer, order, i,
+                                BarObserver.FillOutcome.REJECTED_TOO_SMALL);
                         continue; // unplaceable on a real exchange -> no fill
                     }
                     double notional = rounded * open;
@@ -103,15 +122,21 @@ public final class Backtester {
                     entryBar = i;
                     entryFees = feePaid;
                     peakSinceEntry = high;
+                    report(observer, order, i, BarObserver.FillOutcome.FILLED);
                 } else if (order instanceof Pending.Sell s) {
                     if (qty <= 0) {
+                        report(observer, order, i,
+                                BarObserver.FillOutcome.IGNORED_NOTHING_TO_SELL);
                         continue; // nothing to sell
                     }
                     double sellQty = Math.min(qty,
                             rules.roundQty(desiredSellQty(s.sizing(), qty)));
                     if (sellQty <= 0) {
+                        report(observer, order, i,
+                                BarObserver.FillOutcome.REJECTED_TOO_SMALL);
                         continue;
                     }
+                    report(observer, order, i, BarObserver.FillOutcome.FILLED);
                     cash += exitProceeds(sellQty, open, fee);
                     if (sellQty >= qty - 1e-12) {
                         trades.add(makeTrade(series, entryBar, i, qty,
@@ -173,8 +198,12 @@ public final class Backtester {
             }
 
             // ── 3. Rules at the close -> pending orders / SET config ────
-            for (StrategyAst.RuleDecl rule : strategy.rules()) {
-                for (StrategyAst.IfStmt stmt : rule.body()) {
+            observer.onClose(i, qty > 0);
+            List<StrategyAst.RuleDecl> ruleList = strategy.rules();
+            for (int r = 0; r < ruleList.size(); r++) {
+                List<StrategyAst.IfStmt> body = ruleList.get(r).body();
+                for (int k = 0; k < body.size(); k++) {
+                    StrategyAst.IfStmt stmt = body.get(k);
                     StrategyAst.Action action = interp.bool(stmt.condition(), i)
                             ? stmt.thenAction()
                             : stmt.elseAction().orElse(null);
@@ -182,10 +211,10 @@ public final class Backtester {
                         continue;
                     }
                     switch (action) {
-                        case StrategyAst.Action.Buy b ->
-                                pending.add(new Pending.Buy(b.sizing()));
-                        case StrategyAst.Action.Sell s ->
-                                pending.add(new Pending.Sell(s.sizing()));
+                        case StrategyAst.Action.Buy b -> pending.add(
+                                new Pending.Buy(b.sizing(), new Origin(i, r, k)));
+                        case StrategyAst.Action.Sell s -> pending.add(
+                                new Pending.Sell(s.sizing(), new Origin(i, r, k)));
                         case StrategyAst.Action.Set set -> {
                             double pct = ((Expr.PercentLit) set.value()).value();
                             switch (set.target()) {
@@ -220,6 +249,12 @@ public final class Backtester {
         return new BacktestResult(strategy.capital(), finalEquity, equity,
                 trades, strategy.warmupBars(), Math.max(0, n - firstBar),
                 maxDrawdownPct(equity, firstBar));
+    }
+
+    private static void report(BarObserver observer, Pending order, int fillBar,
+                               BarObserver.FillOutcome outcome) {
+        Origin o = order.origin();
+        observer.onOrder(o.bar(), fillBar, o.rule(), o.stmt(), outcome);
     }
 
     // ── Sizing ──────────────────────────────────────────────────────────

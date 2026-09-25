@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -128,7 +129,8 @@ public class BacktestController {
             String lastBarTime,
             MetricsDto metrics,
             List<TradeDto> trades,
-            List<EquityCurves.CurvePoint> equityCurve
+            List<EquityCurves.CurvePoint> equityCurve,
+            List<UsedIndicator> indicators
     ) {
         static Result from(BacktestResult r, CompiledStrategy strategy,
                            CandleSeries series) {
@@ -148,7 +150,44 @@ public class BacktestController {
                             .toString(),
                     MetricsDto.from(metrics),
                     r.trades().stream().map(TradeDto::from).toList(),
-                    downsample(series.openTimeMillis(), r.equityCurve()));
+                    downsample(series.openTimeMillis(), r.equityCurve()),
+                    // Sorted because the manifest is a Set: without an order
+                    // the same strategy would hand its indicators back in a
+                    // different sequence between runs, and the chart would
+                    // recolour them for no reason the user can see.
+                    strategy.indicators().stream()
+                            .map(UsedIndicator::from)
+                            .sorted(Comparator.comparing(UsedIndicator::key))
+                            .toList());
+        }
+    }
+
+    /**
+     * One indicator the strategy actually used, as the chart needs to ask for
+     * it back.
+     *
+     * <p>Only the IDENTITY travels here, never the values. The chart fetches
+     * those from /api/indicators, which runs the same {@code IndicatorBank}
+     * over the same candles — and because a backtest is deterministic, what it
+     * draws is necessarily what the interpreter indexed during the run.
+     *
+     * <p>Sending the arrays instead would triple the size of an already large
+     * response to say the same thing, and would still need the endpoint for
+     * any indicator the user added afterwards to investigate the result.
+     */
+    public record UsedIndicator(
+            String name,
+            String source,
+            List<Double> args,
+            /** The engine's own cache key, e.g. {@code SMA(CLOSE,200)}. */
+            String key
+    ) {
+        static UsedIndicator from(CompiledStrategy.IndicatorInstance i) {
+            return new UsedIndicator(
+                    i.name(),
+                    i.source() == null ? null : i.source().name(),
+                    i.constArgs(),
+                    i.key());
         }
     }
 

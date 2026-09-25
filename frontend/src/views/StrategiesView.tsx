@@ -19,6 +19,7 @@ export default function StrategiesView({
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResultDto | null>(null)
   const [candles, setCandles] = useState<CandleColumns | null>(null)
+  const [runSource, setRunSource] = useState<string | null>(null)
 
   useEffect(() => {
     api
@@ -33,8 +34,14 @@ export default function StrategiesView({
     setCandles(null)
     setError(null)
     try {
-      const res = await api.runVersion(s.id, s.latestVersion)
+      // The version's source travels with the result so the debugger can
+      // re-run exactly this version.
+      const [res, source] = await Promise.all([
+        api.runVersion(s.id, s.latestVersion),
+        api.getVersionSource(s.id, s.latestVersion).catch(() => null),
+      ])
       if (res.ok && res.result) {
+        setRunSource(source)
         setResult(res.result)
         api
           .getCandles(res.result.symbol, res.result.timeframe,
@@ -94,7 +101,13 @@ export default function StrategiesView({
         )}
       </section>
 
-      {result && <ResultPanel result={result} candles={candles} />}
+      {result && (
+        <ResultPanel
+          result={result}
+          candles={candles}
+          source={runSource ?? undefined}
+        />
+      )}
     </>
   )
 }

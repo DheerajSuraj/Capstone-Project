@@ -70,19 +70,63 @@ public class BacktestService {
     }
 
     /**
+     * Everything a run needs, resolved and validated: the compiled strategy,
+     * the candles, and the exchange's lot rules. The debugger and the signal
+     * statistics start from this too — so they see exactly the bars and the
+     * rules a backtest sees, and a number on their screen is the number the
+     * backtest used. (Recursive indicators such as EMA and RSI depend on
+     * where the series STARTS, so the same from/to matters, not just the
+     * same bar.)
+     */
+    public record Prepared(CompiledStrategy strategy, CandleSeries series,
+                           ExchangeRules rules) {
+    }
+
+    /** Either a {@link Prepared} run, or why there isn't one. */
+    public record Preparation(
+            List<Diagnostic> diagnostics,
+            Optional<String> runError,
+            Optional<Prepared> prepared
+    ) {
+        static Preparation compileFailure(List<Diagnostic> diagnostics) {
+            return new Preparation(diagnostics, Optional.empty(), Optional.empty());
+        }
+
+        static Preparation runFailure(String error) {
+            return new Preparation(List.of(), Optional.of(error), Optional.empty());
+        }
+    }
+
+    /**
      * @param from inclusive start, or null for all history
      * @param to   exclusive end, or null for up to now
      */
     public Outcome run(String source, Instant from, Instant to) {
+        Preparation preparation = prepare(source, from, to);
+        if (!preparation.diagnostics().isEmpty()) {
+            return Outcome.compileFailure(preparation.diagnostics());
+        }
+        if (preparation.runError().isPresent()) {
+            return Outcome.runFailure(preparation.runError().get());
+        }
+        Prepared p = preparation.prepared().orElseThrow();
+        BacktestResult result = new Backtester().run(p.strategy(), p.series(),
+                p.rules());
+        return new Outcome(List.of(), Optional.empty(), Optional.of(result),
+                Optional.of(p.strategy()), Optional.of(p.series()));
+    }
+
+    /** Compile, resolve the symbol, load the candles, check the warm-up. */
+    public Preparation prepare(String source, Instant from, Instant to) {
         CompilationService.Outcome compiled = compilation.compile(source);
         if (!compiled.ok()) {
-            return Outcome.compileFailure(compiled.diagnostics());
+            return Preparation.compileFailure(compiled.diagnostics());
         }
         CompiledStrategy strategy = compiled.strategy().orElseThrow();
 
         Optional<Symbol> symbol = symbols.findByTicker(strategy.symbol());
         if (symbol.isEmpty()) {
-            return Outcome.runFailure("no data for symbol '" + strategy.symbol()
+            return Preparation.runFailure("no data for symbol '" + strategy.symbol()
                     + "' — available symbols are seeded in the database");
         }
 
@@ -93,11 +137,11 @@ public class BacktestService {
                 to == null ? Instant.now() : to);
 
         if (series.isEmpty()) {
-            return Outcome.runFailure("no candles for " + strategy.symbol()
+            return Preparation.runFailure("no candles for " + strategy.symbol()
                     + " " + strategy.timeframe() + " in the requested range");
         }
         if (series.size() <= strategy.warmupBars()) {
-            return Outcome.runFailure("only " + series.size() + " bars in range "
+            return Preparation.runFailure("only " + series.size() + " bars in range "
                     + "but the strategy needs " + strategy.warmupBars()
                     + " warm-up bars before it can trade — widen the range "
                     + "or shorten indicator periods");
@@ -106,9 +150,7 @@ public class BacktestService {
         ExchangeRules rules = new ExchangeRules(
                 symbol.get().getStepSize().doubleValue(),
                 symbol.get().getMinNotional().doubleValue());
-
-        BacktestResult result = new Backtester().run(strategy, series, rules);
-        return new Outcome(List.of(), Optional.empty(), Optional.of(result),
-                Optional.of(strategy), Optional.of(series));
+        return new Preparation(List.of(), Optional.empty(),
+                Optional.of(new Prepared(strategy, series, rules)));
     }
 }

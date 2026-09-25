@@ -150,6 +150,11 @@ public final class Interpreter {
             return cached;
         }
         double value = num(letValue(name), i);
+        // Evaluating the body may have moved the cache to an EARLIER bar (a
+        // let that reads another let through a lookback, e.g. m[1]). Re-anchor
+        // before storing, or bar i's value would be filed under bar i-1 and
+        // a later read of name[1] would get the wrong bar.
+        touchBar(i);
         numCache.put(name, value);
         return value;
     }
@@ -161,6 +166,7 @@ public final class Interpreter {
             return cached;
         }
         boolean value = bool(letValue(name), i);
+        touchBar(i); // same re-anchoring as letNum
         boolCache.put(name, value);
         return value;
     }

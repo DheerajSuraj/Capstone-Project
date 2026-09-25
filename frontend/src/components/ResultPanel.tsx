@@ -1,6 +1,14 @@
-import type { BacktestResultDto, CandleColumns, CurvePoint } from '../api'
+import { useMemo, useState } from 'react'
+import type {
+  BacktestResultDto,
+  CandleColumns,
+  CurvePoint,
+  RunContext,
+} from '../api'
 import PriceChart from '../charts/PriceChart'
 import EquityChart from '../charts/EquityChart'
+import DecisionPanel from '../debugger/DecisionPanel'
+import SignalPanel from '../debugger/SignalPanel'
 
 const fmt = (n: number, digits = 2) =>
   n.toLocaleString('en-US', {
@@ -22,10 +30,32 @@ const buyAndHold = (candles: CandleColumns, capital: number): CurvePoint[] =>
 export default function ResultPanel({
   result,
   candles,
+  source,
 }: {
   result: BacktestResultDto
   candles: CandleColumns | null
+  /** The TSL that produced this result. Without it the debugger is off. */
+  source?: string
 }) {
+  const [selectedTime, setSelectedTime] = useState<number | null>(null)
+
+  // Pin the run: every run so far covers all history, but the candle sync
+  // keeps appending bars. Ending the range just past this result's last bar
+  // makes the debugger see exactly the bars this result saw. (The engine only
+  // looks backwards, so earlier decisions would match anyway — this keeps the
+  // statistics and the final bar exact too.)
+  const run = useMemo<RunContext | null>(
+    () =>
+      source == null
+        ? null
+        : {
+            source,
+            from: null,
+            to: new Date(Date.parse(result.lastBarTime) + 1).toISOString(),
+          },
+    [source, result.lastBarTime],
+  )
+
   return (
     <section className="panel">
       <h2>
@@ -76,13 +106,30 @@ export default function ResultPanel({
 
       {candles && (
         <>
-          <PriceChart candles={candles} trades={result.trades} />
+          <PriceChart
+            candles={candles}
+            trades={result.trades}
+            symbol={result.symbol}
+            timeframe={result.timeframe}
+            usedIndicators={result.indicators}
+            onBarClick={run ? setSelectedTime : undefined}
+            selectedTime={selectedTime}
+          />
+          {run && selectedTime != null && (
+            <DecisionPanel
+              run={run}
+              timeMillis={selectedTime}
+              onClose={() => setSelectedTime(null)}
+            />
+          )}
           <EquityChart
             curve={result.equityCurve}
             benchmark={buyAndHold(candles, result.initialCapital)}
           />
         </>
       )}
+
+      {run && <SignalPanel key={`${run.source}|${run.to}`} run={run} />}
 
       <table>
         <thead>

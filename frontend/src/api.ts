@@ -72,6 +72,18 @@ export interface CandleColumns {
   v: number[]
 }
 
+/** One indicator the strategy used, as reported by the backtest.
+ *  Only the identity travels — the chart fetches values from
+ *  /api/indicators, which runs the same IndicatorBank over the same
+ *  candles, so what it draws is what the run saw. */
+export interface UsedIndicatorDto {
+  name: string
+  source: string | null
+  args: number[]
+  /** The engine's own cache key, e.g. "SMA(CLOSE,200)". */
+  key: string
+}
+
 export interface BacktestResultDto {
   strategyName: string
   symbol: string
@@ -90,6 +102,7 @@ export interface BacktestResultDto {
   metrics: MetricsDto
   trades: TradeDto[]
   equityCurve: CurvePoint[]
+  indicators: UsedIndicatorDto[]
 }
 
 export interface RunResponse {
@@ -103,6 +116,181 @@ export interface RunResponse {
 export interface CompileResponse {
   ok: boolean
   diagnostics: DiagnosticDto[]
+}
+
+// ── Decision debugger (Module 3) and signal statistics (Module 4) ──────
+
+/** The inputs that pin down one backtest exactly. Explaining a bar or
+ *  measuring signals re-runs precisely this — same source, same bars. */
+export interface RunContext {
+  source: string
+  from: string | null
+  to: string | null
+}
+
+export type ConditionKind =
+  | 'COMPARE'
+  | 'CROSSOVER'
+  | 'CROSSUNDER'
+  | 'AND'
+  | 'OR'
+  | 'NOT'
+  | 'LET'
+
+export interface ConditionNodeDto {
+  kind: ConditionKind
+  text: string
+  span: SpanDto
+  passed: boolean
+  unknown: boolean
+  left: number | null
+  right: number | null
+  op: string | null
+  previousLeft: number | null
+  previousRight: number | null
+  distance: number | null
+  relativeDistance: number | null
+  note: string | null
+  children: ConditionNodeDto[]
+}
+
+export type DecisionOutcome =
+  | 'WARMUP'
+  | 'NO_ACTION'
+  | 'FILLED'
+  | 'IGNORED_ALREADY_LONG'
+  | 'IGNORED_NOTHING_TO_SELL'
+  | 'REJECTED_TOO_SMALL'
+  | 'NOT_FILLED_LAST_BAR'
+  | 'SETTING_APPLIED'
+
+export interface ClosestChangeDto {
+  text: string
+  span: SpanDto
+  distance: number
+  relativeDistance: number | null
+  note: string | null
+}
+
+export interface StatementExplanationDto {
+  ruleIndex: number
+  ruleName: string
+  statementIndex: number
+  span: SpanDto
+  condition: ConditionNodeDto
+  taken: 'THEN' | 'ELSE' | 'NONE'
+  thenAction: string
+  elseAction: string | null
+  outcome: DecisionOutcome
+  fillPrice: number | null
+  fillTimeMillis: number | null
+  closestChange: ClosestChangeDto | null
+  sentence: string
+}
+
+export interface BarExplanationDto {
+  bar: number
+  openTimeMillis: number
+  open: number
+  high: number
+  low: number
+  close: number
+  warmupBars: number
+  warmup: boolean
+  lastBar: boolean
+  inPosition: boolean | null
+  statements: StatementExplanationDto[]
+  summary: string
+}
+
+export interface ExplainResponse {
+  ok: boolean
+  diagnostics: DiagnosticDto[]
+  runError: string | null
+  explanation: BarExplanationDto | null
+}
+
+export interface LeafStatsDto {
+  text: string
+  span: SpanDto
+  trueBars: number
+  truePct: number
+  unknownBars: number
+  soleBlockerBars: number
+}
+
+export interface StatementStatsDto {
+  ruleIndex: number
+  ruleName: string
+  statementIndex: number
+  span: SpanDto
+  condition: string
+  thenAction: string
+  trueBars: number
+  truePct: number
+  unknownBars: number
+  actionBars: number
+  outcomes: Partial<Record<DecisionOutcome, number>>
+  nearMisses: number
+  parts: LeafStatsDto[]
+  bottleneck: string | null
+  trueByHour: number[]
+  barsByHour: number[]
+  trueByWeekday: number[]
+  barsByWeekday: number[]
+  sentence: string
+}
+
+export interface SignalStatisticsDto {
+  barsEvaluated: number
+  nearMissThreshold: number
+  intraday: boolean
+  statements: StatementStatsDto[]
+}
+
+export interface ConfluenceFeatureDto {
+  id: string
+  group: string
+  label: string
+  tsl: string | null
+}
+
+export interface ConfluenceFindingDto {
+  feature: ConfluenceFeatureDto
+  tradesWith: number
+  winsWith: number
+  winRateWith: number
+  avgReturnWith: number
+  tradesWithout: number
+  winsWithout: number
+  winRateWithout: number
+  avgReturnWithout: number
+  tradesUnknown: number
+  tested: boolean
+  pValue: number | null
+  adjustedP: number | null
+  significant: boolean
+  suggestion: string | null
+  sentence: string
+}
+
+export interface ConfluenceReportDto {
+  status: 'OK' | 'TOO_FEW_TRADES'
+  message: string
+  trades: number
+  wins: number
+  winRate: number
+  testsRun: number
+  threshold: number
+  findings: ConfluenceFindingDto[]
+}
+
+export interface SignalResponse {
+  ok: boolean
+  diagnostics: DiagnosticDto[]
+  runError: string | null
+  statistics: SignalStatisticsDto | null
+  confluence: ConfluenceReportDto | null
 }
 
 /**
@@ -216,6 +404,20 @@ export const api = {
     request<RunResponse>('/api/backtest', {
       method: 'POST',
       body: JSON.stringify({ source }),
+    }),
+
+  /** Why the strategy did what it did at one bar (epoch-ms open time). */
+  explainBar: (run: RunContext, timeMillis: number): Promise<ExplainResponse> =>
+    request<ExplainResponse>('/api/debug/explain', {
+      method: 'POST',
+      body: JSON.stringify({ ...run, time: timeMillis }),
+    }),
+
+  /** Signal statistics and confluence for the run. */
+  signals: (run: RunContext, nearMiss?: number): Promise<SignalResponse> =>
+    request<SignalResponse>('/api/signals', {
+      method: 'POST',
+      body: JSON.stringify({ ...run, nearMiss }),
     }),
 
   // Public endpoint — works signed out, which is what the landing chart needs.

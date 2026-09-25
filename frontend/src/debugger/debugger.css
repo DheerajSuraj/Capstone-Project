@@ -1,0 +1,363 @@
+/*
+ * Decision debugger + signal statistics — Terminal theme.
+ * Pass/fail uses amber and grey: green/red are reserved for profit/loss.
+ */
+
+.tsb-dbg {
+  --surface: #1c2027;
+  --surface-2: #22262e;
+  --border: #2a2f38;
+  --text: #e6e8ec;
+  --muted: #8b909a;
+  --accent: #e8b44c;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  color: var(--text);
+}
+
+.tsb-dbg *,
+.tsb-dbg *::before,
+.tsb-dbg *::after {
+  box-sizing: border-box;
+}
+
+.tsb-dbg__hint {
+  margin-top: 6px;
+  color: #8b909a;
+  font-size: 12px;
+}
+
+.tsb-dbg__panel {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.tsb-dbg__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.tsb-dbg__eyebrow {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tsb-dbg__title {
+  font-size: 15px;
+  margin-top: 2px;
+}
+
+.tsb-dbg__muted {
+  color: var(--muted);
+}
+
+.tsb-dbg__lead {
+  margin: 6px 0 10px;
+  line-height: 1.5;
+}
+
+.is-stale {
+  opacity: 0.55;
+}
+
+.tsb-dbg__bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.tsb-dbg__chip {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+}
+
+.tsb-dbg__stmt {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.tsb-dbg__stmt-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.tsb-dbg__rule {
+  font-weight: 600;
+}
+
+.tsb-dbg__code {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.tsb-dbg__outcome {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tsb-dbg__outcome.is-filled {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tsb-dbg__outcome.is-blocked {
+  border-color: var(--text);
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------- tree */
+
+.tsb-dbg__tree {
+  list-style: none;
+  margin: 0;
+  padding-left: 0;
+}
+
+.tsb-dbg__tree .tsb-dbg__tree {
+  padding-left: 20px;
+  border-left: 1px dashed var(--border);
+  margin-left: 7px;
+}
+
+.tsb-dbg__node {
+  padding: 3px 0;
+}
+
+.tsb-dbg__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.tsb-dbg__icon {
+  width: 14px;
+  flex: none;
+  font-family: var(--mono);
+  text-align: center;
+}
+
+.tsb-dbg__node--pass > .tsb-dbg__row > .tsb-dbg__icon {
+  color: var(--accent);
+}
+
+.tsb-dbg__node--fail > .tsb-dbg__row > .tsb-dbg__icon,
+.tsb-dbg__node--unknown > .tsb-dbg__row > .tsb-dbg__icon {
+  color: var(--muted);
+}
+
+.tsb-dbg__node--fail > .tsb-dbg__row > .tsb-dbg__code {
+  color: var(--muted);
+}
+
+.tsb-dbg__head {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: none;
+}
+
+.tsb-dbg__values {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.tsb-dbg__note {
+  margin: 2px 0 0 24px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tsb-dbg__node.is-closest > .tsb-dbg__row {
+  background: rgba(232, 180, 76, 0.08);
+  border-radius: 4px;
+}
+
+.tsb-dbg__tag {
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+/* ------------------------------------------------------- statistics */
+
+.tsb-dbg__scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.tsb-dbg__metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.tsb-dbg__metric {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.tsb-dbg__metric-k {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tsb-dbg__metric-v {
+  font-family: var(--mono);
+  font-size: 15px;
+}
+
+.tsb-dbg__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 6px 0 10px;
+}
+
+.tsb-dbg__table th,
+.tsb-dbg__table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.tsb-dbg__table .num {
+  text-align: right;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.tsb-dbg__table tr.is-bottleneck td {
+  color: var(--accent);
+}
+
+.tsb-dbg__table tr.is-untested td {
+  color: var(--muted);
+}
+
+.tsb-dbg__hists {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.tsb-dbg__hist {
+  margin: 0;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.tsb-dbg__hist figcaption {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.tsb-dbg__hist-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 64px;
+  padding-bottom: 14px;
+  position: relative;
+}
+
+.tsb-dbg__hist-col {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  position: relative;
+}
+
+.tsb-dbg__hist-bar {
+  background: var(--accent);
+  opacity: 0.8;
+  min-height: 1px;
+  border-radius: 1px 1px 0 0;
+}
+
+.tsb-dbg__hist-label {
+  position: absolute;
+  bottom: -14px;
+  left: 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.tsb-dbg__finding {
+  margin: 8px 0;
+  padding: 10px;
+  border-left: 2px solid var(--accent);
+  background: rgba(232, 180, 76, 0.06);
+}
+
+.tsb-dbg__finding p {
+  margin: 0 0 6px;
+  line-height: 1.5;
+}
+
+.tsb-dbg__snippet {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.tsb-dbg__details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+@media (max-width: 600px) {
+  .tsb-dbg__panel {
+    padding: 12px;
+  }
+
+  .tsb-dbg__outcome {
+    margin-left: 0;
+  }
+
+  .tsb-dbg__table {
+    min-width: 520px;
+  }
+}
+
+.tsb-dbg__header > button {
+  flex: none;
+  white-space: nowrap;
+}

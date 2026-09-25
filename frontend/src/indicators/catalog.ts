@@ -334,3 +334,41 @@ export function idFor(
 ): string {
   return describe(spec, source, args)
 }
+/* --------------------------------------------- from a backtest manifest */
+
+/** Mirrors UsedIndicatorDto in ../api — what a backtest reports it used. */
+export type UsedIndicator = {
+  name: string
+  source: string | null
+  args: number[]
+  key: string
+}
+
+/**
+ * Turns the manifest a backtest reports into lines for the result chart.
+ *
+ * The id is the engine's own cache key, so a line on the chart and an entry
+ * in the manifest are literally the same string. Anything the catalog does
+ * not recognise is skipped rather than guessed at — that can only happen if
+ * the registry has an indicator with no presentation entry, which the
+ * backend's drift test exists to prevent.
+ */
+export function fromUsedIndicators(
+  used: UsedIndicator[],
+  catalog: IndicatorSpec[],
+): ActiveIndicator[] {
+  const out: ActiveIndicator[] = []
+  for (const u of used) {
+    const spec = catalog.find((s) => s.name === u.name)
+    if (!spec) continue
+    out.push({
+      id: u.key,
+      spec,
+      source: (u.source ?? undefined) as PriceField | undefined,
+      args: u.args,
+      color: nextColor(out.map((a) => a.color)),
+      visible: true,
+    })
+  }
+  return out
+}

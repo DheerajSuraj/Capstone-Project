@@ -35,6 +35,9 @@ export default function BuilderView({
   const [result, setResult] = useState<BacktestResultDto | null>(null)
   const [candles, setCandles] = useState<CandleColumns | null>(null)
   const [savedNote, setSavedNote] = useState<string | null>(null)
+  // The source exactly as it was when this result was produced — the
+  // debugger must re-run THAT, not whatever is in the editor now.
+  const [runSource, setRunSource] = useState<string | null>(null)
 
   const run = async () => {
     setBusy(true)
@@ -42,9 +45,11 @@ export default function BuilderView({
     setCandles(null)
     setRunError(null)
     setDiagnostics([])
+    const submitted = source
     try {
-      const res = await api.runAdhocBacktest(source)
+      const res = await api.runAdhocBacktest(submitted)
       if (res.ok && res.result) {
+        setRunSource(submitted)
         setResult(res.result)
         api
           .getCandles(res.result.symbol, res.result.timeframe,
@@ -144,7 +149,13 @@ export default function BuilderView({
         </button>
       </section>
 
-      {result && <ResultPanel result={result} candles={candles} />}
+      {result && (
+        <ResultPanel
+          result={result}
+          candles={candles}
+          source={runSource ?? undefined}
+        />
+      )}
     </>
   )
 }

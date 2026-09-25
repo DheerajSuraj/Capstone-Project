@@ -99,7 +99,7 @@ public class CompileController {
             String message,
             SpanDto span
     ) {
-        static DiagnosticDto from(Diagnostic d) {
+        public static DiagnosticDto from(Diagnostic d) {
             return new DiagnosticDto(d.severity().name(), d.code(),
                     d.message(), SpanDto.from(d.span()));
         }

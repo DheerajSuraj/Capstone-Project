@@ -208,4 +208,19 @@ class InterpreterTest {
         assertFalse(f.at(4));
         assertTrue(f.at(5));
     }
+
+    @Test
+    @DisplayName("a let read at a past bar through another let stays on its own bar")
+    void nestedLetLookbackKeepsBars() {
+        // Regression: evaluating d moved the cache to bar i-1 (via m[1]) and
+        // then stored bar i's d there, so d[1] returned d at bar i and
+        // "d > d[1]" was always false.
+        // closes 4,6,5,8,2,9 -> d = _,2,-1,3,-6,7 -> d > d[1] at 3 and 5.
+        Fixture f = fixtureFor("let m = CLOSE * 1\n let d = m - m[1]",
+                "d > d[1]");
+        assertFalse(f.at(2));
+        assertTrue(f.at(3));
+        assertFalse(f.at(4));
+        assertTrue(f.at(5));
+    }
 }
