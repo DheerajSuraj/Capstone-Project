@@ -1,0 +1,324 @@
+/*
+ * Indicator picker — Terminal theme, matching the auth screens and the chart.
+ * Everything is scoped under .tsb-ind.
+ */
+
+.tsb-ind {
+  --bg: #14171c;
+  --surface: #1c2027;
+  --border: #2a2f38;
+  --border-strong: #3a4049;
+  --text: #e6e8ec;
+  --muted: #8b909a;
+  --accent: #e8b44c;
+  --accent-text: #16191f;
+  --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  font-family: var(--sans);
+  color: var(--text);
+}
+
+.tsb-ind *,
+.tsb-ind *::before,
+.tsb-ind *::after {
+  box-sizing: border-box;
+}
+
+/* ---------------------------------------------------------------- bar */
+
+.tsb-ind__bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tsb-ind__anchor {
+  position: relative;
+}
+
+.tsb-ind__add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tsb-ind__add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tsb-ind__add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* -------------------------------------------------------------- panel */
+
+.tsb-ind__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: 320px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.tsb-ind__search {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+}
+
+.tsb-ind__search:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+.tsb-ind__search::placeholder {
+  color: #6a707b;
+}
+
+.tsb-ind__list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.tsb-ind__item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tsb-ind__item:hover,
+.tsb-ind__item:focus-visible {
+  background: #222731;
+  outline: none;
+}
+
+.tsb-ind__itemname {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.tsb-ind__itemlabel {
+  flex-grow: 1;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tsb-ind__tag {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.tsb-ind__empty {
+  padding: 16px 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------- params */
+
+.tsb-ind__params {
+  padding: 12px;
+}
+
+.tsb-ind__paramshead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.tsb-ind__back {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.tsb-ind__back:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tsb-ind__param {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tsb-ind__param input {
+  width: 110px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.tsb-ind__param input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tsb-ind__confirm {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 6px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tsb-ind__confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------ legend */
+
+.tsb-ind__chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 4px 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.tsb-ind__chip--off .tsb-ind__chiptext {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.tsb-ind__swatch {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tsb-ind__swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tsb-ind__chiptext {
+  white-space: nowrap;
+}
+
+.tsb-ind__remove {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tsb-ind__remove:hover {
+  background: #2a2f38;
+  color: var(--text);
+}
+
+.tsb-ind__error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #f0776c;
+}
+
+/* Select for the price-source parameter. */
+.tsb-ind__param select {
+  width: 110px;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tsb-ind__param select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tsb-ind__note {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}

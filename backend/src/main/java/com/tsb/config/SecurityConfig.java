@@ -85,45 +85,52 @@ public class SecurityConfig {
             throws Exception {
 
         http
-            // No cookie carries authority on any endpoint except /api/auth/refresh,
-            // and that cookie is SameSite=Lax, which the browser will not send on a
-            // cross-site POST. Everything else authenticates with a Bearer header,
-            // which a cross-site form cannot set. So there is no CSRF surface to
-            // defend, and the token would only be ceremony.
-            .csrf(csrf -> csrf.disable())
-            .cors(Customizer.withDefaults())
-            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // No cookie carries authority on any endpoint except /api/auth/refresh,
+                // and that cookie is SameSite=Lax, which the browser will not send on a
+                // cross-site POST. Everything else authenticates with a Bearer header,
+                // which a cross-site form cannot set. So there is no CSRF surface to
+                // defend, and the token would only be ceremony.
+                .csrf(csrf -> csrf.disable())
+                .cors(Customizer.withDefaults())
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
-            .authorizeHttpRequests(a -> a
-                // Sign-in, sign-up and refresh must be reachable by people
-                // who are, by definition, not yet signed in.
-                .requestMatchers("/api/auth/signup", "/api/auth/login",
-                                 "/api/auth/google", "/api/auth/google/username",
-                                 "/api/auth/refresh", "/api/auth/logout",
-                                 "/api/auth/username-available").permitAll()
+                .authorizeHttpRequests(a -> a
+                        // Sign-in, sign-up and refresh must be reachable by people
+                        // who are, by definition, not yet signed in.
+                        .requestMatchers("/api/auth/signup", "/api/auth/login",
+                                "/api/auth/google", "/api/auth/google/username",
+                                "/api/auth/refresh", "/api/auth/logout",
+                                "/api/auth/username-available").permitAll()
 
-                // Market data is public. It is the same data Binance serves
-                // to anyone, it is what the landing chart renders before
-                // sign-in, and putting it behind a token buys nothing.
-                .requestMatchers(HttpMethod.GET, "/api/candles/**", "/api/symbols/**").permitAll()
+                        // Market data is public. It is the same data Binance serves
+                        // to anyone, it is what the landing chart renders before
+                        // sign-in, and putting it behind a token buys nothing.
+                        .requestMatchers(HttpMethod.GET, "/api/candles/**", "/api/symbols/**").permitAll()
 
-                .requestMatchers("/actuator/health").permitAll()
+                        // Indicators are a view of the same public candles, computed by
+                        // the engine. Gating them would mean the landing chart could show
+                        // prices but not a moving average over those prices, which reads
+                        // as broken rather than as a reason to sign up.
+                        .requestMatchers(HttpMethod.GET, "/api/indicators/catalog").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/indicators").permitAll()
 
-                // Everything else — strategies, backtests, competition
-                // entries — needs a user, because everything else is owned.
-                .anyRequest().authenticated())
+                        .requestMatchers("/actuator/health").permitAll()
 
-            .oauth2ResourceServer(o -> o
-                .jwt(j -> j.decoder(jwtDecoder))
-                .authenticationEntryPoint((request, response, ex) -> {
-                    // Default is a WWW-Authenticate challenge, which makes
-                    // the browser pop a native basic-auth dialog. Return the
-                    // same JSON shape as every other auth error instead.
-                    response.setStatus(401);
-                    response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                    response.getWriter().write(
-                            "{\"code\":\"UNAUTHENTICATED\",\"message\":\"Sign in to continue.\"}");
-                }));
+                        // Everything else — strategies, backtests, competition
+                        // entries — needs a user, because everything else is owned.
+                        .anyRequest().authenticated())
+
+                .oauth2ResourceServer(o -> o
+                        .jwt(j -> j.decoder(jwtDecoder))
+                        .authenticationEntryPoint((request, response, ex) -> {
+                            // Default is a WWW-Authenticate challenge, which makes
+                            // the browser pop a native basic-auth dialog. Return the
+                            // same JSON shape as every other auth error instead.
+                            response.setStatus(401);
+                            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                            response.getWriter().write(
+                                    "{\"code\":\"UNAUTHENTICATED\",\"message\":\"Sign in to continue.\"}");
+                        }));
 
         return http.build();
     }

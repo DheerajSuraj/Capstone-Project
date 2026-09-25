@@ -7,6 +7,9 @@ import {
   type ISeriesApi,
   type UTCTimestamp,
 } from 'lightweight-charts'
+import IndicatorPicker from '../indicators/IndicatorPicker'
+import { useChartIndicators } from '../indicators/useChartIndicators'
+import type { ActiveIndicator } from '../indicators/catalog'
 
 // Interaction happens on a transparent DOM <div> layer, NOT a <canvas>:
 // a div reliably receives clicks and can't be swallowed by the chart's
@@ -42,6 +45,17 @@ export default function DrawableChart({
   const [tool, setTool] = useState<Tool>('cursor')
   const [status, setStatus] = useState('connecting…')
 
+  // The chart lives in STATE as well as in a ref. The ref is for the mouse
+  // handlers, which need the current value without re-rendering; the state is
+  // for useChartIndicators, which is a hook and must re-run when the chart
+  // appears. A ref alone would hand the hook null on its first run and never
+  // trigger a second one.
+  const [chartApi, setChartApi] = useState<IChartApi | null>(null)
+  const [indicators, setIndicators] = useState<ActiveIndicator[]>([])
+  const [indicatorError, setIndicatorError] = useState<string | null>(null)
+
+  useChartIndicators(chartApi, indicators, symbol, timeframe, setIndicatorError)
+
   useEffect(() => {
     toolRef.current = tool
   }, [tool])
@@ -71,6 +85,7 @@ export default function DrawableChart({
     })
     chartRef.current = chart
     seriesRef.current = series
+    setChartApi(chart)
 
     let disposed = false
     let socket: WebSocket | null = null
@@ -157,6 +172,9 @@ export default function DrawableChart({
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
+      // Tells useChartIndicators its series are gone, so it does not try to
+      // remove them from a chart that no longer exists.
+      setChartApi(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, timeframe])
@@ -294,6 +312,16 @@ export default function DrawableChart({
           {tool === 'erase' && ' · click a drawing to remove'}
         </span>
       </div>
+
+      {/* Indicators get their own row: the legend grows as lines are added,
+          and sharing the toolbar would shove the drawing tools around. */}
+      <div style={{ margin: '0 0 8px' }}>
+        <IndicatorPicker active={indicators} onChange={setIndicators} />
+        {indicatorError && (
+          <div className="tsb-ind__error">{indicatorError}</div>
+        )}
+      </div>
+
       <div style={{ position: 'relative', height }}>
         {/* chart */}
         <div ref={host} style={{ position: 'absolute', inset: 0, borderRadius: 6, overflow: 'hidden', border: '1px solid #2a2f38' }} />
