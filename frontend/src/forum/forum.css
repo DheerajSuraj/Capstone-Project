@@ -1,0 +1,136 @@
+/* Forum — Terminal theme. Green/red only on money (a shared strategy's return). */
+
+.tsb-f {
+  --surface: #1c2027;
+  --surface-2: #22262e;
+  --border: #2a2f38;
+  --text: #e6e8ec;
+  --muted: #8b909a;
+  --accent: #e8b44c;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  color: var(--text);
+  max-width: 920px;
+}
+
+.tsb-f *, .tsb-f *::before, .tsb-f *::after { box-sizing: border-box; }
+.tsb-f .up { color: #4cc38a; }
+.tsb-f .down { color: #e5544b; }
+.tsb-f__muted { color: var(--muted); }
+.tsb-f__small { font-size: 12px; }
+.tsb-f__row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tsb-f__link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font-size: 12px; text-decoration: underline; }
+
+.tsb-f__top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.tsb-f__top h2 { margin: 0 0 4px; }
+
+.tsb-f__bar { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
+.tsb-f__cats { display: flex; flex-wrap: wrap; gap: 6px; }
+.tsb-f__cats button { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+.tsb-f__cats button.is-on { border-color: var(--accent); color: var(--accent); }
+.tsb-f__tools { display: flex; gap: 6px; flex-wrap: wrap; }
+.tsb-f__tools input, .tsb-f__tools select {
+  min-height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface-2); color: var(--text); font: inherit; margin: 0;
+}
+
+.tsb-f__empty { text-align: center; padding: 36px 12px; }
+.tsb-f__empty-icon { font-size: 32px; }
+.tsb-f__empty-title { font-weight: 600; margin: 6px 0; }
+.tsb-f__empty p { color: var(--muted); }
+
+.tsb-f__list { display: grid; gap: 8px; }
+.tsb-f__card {
+  display: flex; gap: 14px; justify-content: space-between; text-align: left; width: 100%;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2); color: var(--text); font: inherit; cursor: pointer;
+}
+.tsb-f__card:hover { border-color: var(--accent); }
+.tsb-f__card.is-hidden { opacity: 0.6; }
+.tsb-f__card-main { min-width: 0; flex: 1; display: grid; gap: 5px; }
+.tsb-f__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; color: var(--muted); }
+.tsb-f__cat { color: var(--text); }
+.tsb-f__flag { color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; padding: 0 5px; }
+.tsb-f__title { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.tsb-f__excerpt { color: var(--muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tsb-f__foot { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+.tsb-f__foot .is-liked { color: var(--accent); }
+.tsb-f__strat { color: var(--text); }
+.tsb-f__thumb { width: 96px; height: 72px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); flex: none; }
+.tsb-f__more { margin: 12px auto 0; display: block; }
+
+/* ── post ── */
+.tsb-f__post { margin-top: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.tsb-f__post-title { margin: 6px 0 10px; font-size: 20px; text-transform: none; letter-spacing: normal; color: var(--text); overflow-wrap: anywhere; }
+.tsb-f__hidden { padding: 8px 10px; border-left: 2px solid var(--accent); background: rgba(232, 180, 76, 0.07); font-size: 13px; }
+.tsb-f__note { font-size: 13px; color: var(--accent); }
+
+.tsb-rt { line-height: 1.6; overflow-wrap: anywhere; }
+.tsb-rt p { margin: 0 0 10px; }
+.tsb-rt ul { margin: 0 0 10px; padding-left: 20px; }
+.tsb-rt code { font-family: var(--mono); font-size: 0.92em; background: rgba(255, 255, 255, 0.06); padding: 1px 5px; border-radius: 3px; }
+.tsb-rt a { color: var(--accent); }
+.tsb-rt__pre { font-family: var(--mono); font-size: 12px; background: #14171c; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 0 0 10px; }
+.tsb-rt__pre code { background: none; padding: 0; }
+
+.tsb-f__gallery { display: grid; gap: 6px; margin: 10px 0; }
+.tsb-f__gallery.n1 { grid-template-columns: 1fr; }
+.tsb-f__gallery.n2, .tsb-f__gallery.n4 { grid-template-columns: 1fr 1fr; }
+.tsb-f__gallery.n3 { grid-template-columns: repeat(3, 1fr); }
+.tsb-f__img { padding: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: #14171c; cursor: zoom-in; }
+.tsb-f__img img { display: block; width: 100%; height: auto; max-height: 460px; object-fit: contain; }
+.tsb-f__gallery:not(.n1) .tsb-f__img img { height: 200px; object-fit: cover; }
+
+.tsb-f__zoom { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, 0.85); display: grid; place-items: center; cursor: zoom-out; padding: 16px; }
+.tsb-f__zoom img { max-width: 100%; max-height: 100%; border-radius: 6px; }
+
+.tsb-f__actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; }
+.tsb-f__like.is-liked { color: var(--accent); border-color: var(--accent); }
+
+.tsb-f__comments { margin-top: 16px; }
+.tsb-f__comment { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.tsb-f__comment .tsb-rt { margin-top: 4px; font-size: 14px; }
+.tsb-f__reply { display: grid; gap: 8px; margin-top: 12px; }
+.tsb-f__reply textarea, .tsb-f__field input, .tsb-f__field select, .tsb-f__field textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface-2); color: var(--text); font: inherit; margin: 0;
+  text-transform: none; letter-spacing: normal;
+}
+.tsb-f__reply button { justify-self: start; }
+
+/* ── shared strategy ── */
+.tsb-fs { margin: 12px 0; padding: 14px; border: 1px solid var(--accent); border-radius: 8px; background: rgba(232, 180, 76, 0.05); display: grid; gap: 10px; }
+.tsb-fs__head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.tsb-fs__eyebrow { color: var(--accent); font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+.tsb-fs__name { font-size: 16px; font-weight: 600; }
+.tsb-fs__spark { flex: none; }
+.tsb-fs__stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; }
+.tsb-fs__stat { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.tsb-fs__v { font-family: var(--mono); font-size: 15px; }
+.tsb-fs__actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.tsb-fs__code { max-height: 360px; overflow: auto; }
+
+/* ── compose ── */
+.tsb-f__form { display: grid; gap: 14px; margin-top: 10px; }
+.tsb-f__field { display: grid; gap: 6px; }
+.tsb-f__field > span { font-size: 12px; color: var(--muted); }
+.tsb-f__preview { min-height: 120px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 6px; }
+.tsb-f__drop { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; }
+.tsb-f__drop.is-drag { border-color: var(--accent); background: rgba(232, 180, 76, 0.06); }
+.tsb-f__chip-img { position: relative; width: 120px; height: 90px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+.tsb-f__chip-img img { width: 100%; height: 100%; object-fit: cover; }
+.tsb-f__chip-img button { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; min-height: 0; padding: 0; border-radius: 50%; border: 0; background: rgba(0, 0, 0, 0.7); color: #fff; cursor: pointer; line-height: 1; }
+.tsb-f__add-img { display: grid; place-items: center; align-content: center; gap: 2px; width: 180px; height: 90px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; color: var(--accent); font-size: 13px; text-align: center; padding: 6px; }
+
+@media (max-width: 600px) {
+  .tsb-f__thumb { width: 72px; height: 56px; }
+  .tsb-f__gallery.n3 { grid-template-columns: 1fr 1fr; }
+}
+
+/* Beat the app-wide ".panel h2" and "label" styles inside the forum. */
+.panel .tsb-f .tsb-f__post-title { font-size: 22px; text-transform: none; letter-spacing: normal; color: var(--text); font-weight: 600; }
+.tsb-f .tsb-f__field,
+.tsb-f .tsb-f__field > span,
+.tsb-f .tsb-f__add-img { text-transform: none; letter-spacing: normal; font-family: inherit; }
+.tsb-f .tsb-f__field input,
+.tsb-f .tsb-f__field select,
+.tsb-f .tsb-f__field textarea { font: inherit; font-size: 14px; min-height: 36px; }
