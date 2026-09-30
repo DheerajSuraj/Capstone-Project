@@ -1,5 +1,6 @@
 import type { ConditionNodeDto, SpanDto } from '../api'
-import { num, pct } from './format'
+import { CompareGauge, CrossGauge, crossStory } from './Gauge'
+import { leaf } from './humanize'
 
 const sameSpan = (a: SpanDto, b: SpanDto) =>
   a.startLine === b.startLine &&
@@ -7,103 +8,132 @@ const sameSpan = (a: SpanDto, b: SpanDto) =>
   a.endLine === b.endLine &&
   a.endCol === b.endCol
 
-const HEAD: Partial<Record<ConditionNodeDto['kind'], string>> = {
-  AND: 'ALL of',
-  OR: 'ANY of',
-  NOT: 'NOT',
-}
+const isLeaf = (n: ConditionNodeDto) =>
+  n.kind === 'COMPARE' || n.kind === 'CROSSOVER' || n.kind === 'CROSSUNDER'
 
 /**
- * A condition, piece by piece, as the engine saw it at one bar.
+ * A condition as a checklist: each part is a card with a plain-English
+ * sentence and a gauge; AND / OR become "all of these" / "at least one".
  *
- * Pass/fail is shown with ✓ / ✗ in amber and grey, never green/red: in this
- * app green and red only ever mean profit and loss.
+ * Pass/fail is amber ✓ and grey ✗, never green/red — in this app green and
+ * red only ever mean profit and loss.
  */
 export default function ConditionTree({
   node,
   highlight,
 }: {
   node: ConditionNodeDto
-  /** Span of the closest-change leaf, emphasised. */
   highlight?: SpanDto | null
 }) {
-  return (
-    <ul className="tsb-dbg__tree">
-      <Node node={node} highlight={highlight ?? null} />
-    </ul>
-  )
+  return <Part node={node} highlight={highlight ?? null} />
 }
 
-function Node({
+function Part({
   node,
   highlight,
 }: {
   node: ConditionNodeDto
   highlight: SpanDto | null
 }) {
-  const state = node.passed ? 'pass' : node.unknown ? 'unknown' : 'fail'
-  const icon = node.passed ? '✓' : node.unknown ? '?' : '✗'
-  const isLeaf =
-    node.kind === 'COMPARE' ||
-    node.kind === 'CROSSOVER' ||
-    node.kind === 'CROSSUNDER'
-  const closest = isLeaf && highlight != null && sameSpan(node.span, highlight)
+  if (isLeaf(node)) return <LeafCard node={node} highlight={highlight} />
 
-  return (
-    <li className={`tsb-dbg__node tsb-dbg__node--${state}${closest ? ' is-closest' : ''}`}>
-      <div className="tsb-dbg__row">
-        <span className="tsb-dbg__icon" aria-label={state}>
-          {icon}
-        </span>
-        {isLeaf ? (
-          <code className="tsb-dbg__code">{node.text}</code>
-        ) : node.kind === 'LET' ? (
-          <span className="tsb-dbg__head">
-            <code className="tsb-dbg__code">{node.text}</code>
-            <span className="tsb-dbg__muted"> (named condition)</span>
-          </span>
-        ) : (
-          <span className="tsb-dbg__head">{HEAD[node.kind]}</span>
-        )}
-        {isLeaf && !node.unknown && <Values node={node} />}
-        {closest && <span className="tsb-dbg__tag">closest</span>}
+  if (node.kind === 'LET') {
+    return (
+      <div className="tsb-grp">
+        <div className="tsb-grp__title">
+          <Tick node={node} /> “{node.text}”
+        </div>
+        <Part node={node.children[0]} highlight={highlight} />
       </div>
-      {/* A comparison's values already say it; crossings and undefined values need words. */}
-      {node.note && isLeaf && (node.kind !== 'COMPARE' || node.unknown) && (
-        <div className="tsb-dbg__note">{node.note}</div>
-      )}
-      {node.children.length > 0 && (
-        <ul className="tsb-dbg__tree">
-          {node.children.map((c, i) => (
-            <Node key={i} node={c} highlight={highlight} />
-          ))}
-        </ul>
-      )}
-    </li>
+    )
+  }
+
+  if (node.kind === 'NOT') {
+    return (
+      <div className="tsb-grp">
+        <div className="tsb-grp__title">
+          <Tick node={node} /> This must <b>not</b> be true:
+        </div>
+        <div className="tsb-grp__body">
+          <Part node={node.children[0]} highlight={highlight} />
+        </div>
+      </div>
+    )
+  }
+
+  const and = node.kind === 'AND'
+  const ok = node.children.filter((c) => c.passed).length
+  const total = node.children.length
+  return (
+    <div className="tsb-grp">
+      <div className="tsb-grp__title">
+        <Tick node={node} />
+        {and ? (
+          <>
+            <b>All {total}</b> must be true
+          </>
+        ) : (
+          <>
+            <b>Any one</b> of these is enough
+          </>
+        )}
+        <span className="tsb-grp__score">
+          {ok} of {total} true
+        </span>
+      </div>
+      <div className="tsb-grp__body">
+        {node.children.map((c, i) => (
+          <Part key={i} node={c} highlight={highlight} />
+        ))}
+      </div>
+    </div>
   )
 }
 
-function Values({ node }: { node: ConditionNodeDto }) {
-  const cross = node.kind !== 'COMPARE'
+function LeafCard({
+  node,
+  highlight,
+}: {
+  node: ConditionNodeDto
+  highlight: SpanDto | null
+}) {
+  const closest = highlight != null && sameSpan(node.span, highlight)
+  const state = node.passed ? 'pass' : node.unknown ? 'unknown' : 'fail'
   return (
-    <span className="tsb-dbg__values">
-      {cross ? (
-        <>
-          {num(node.previousLeft)} / {num(node.previousRight)} →{' '}
-          {num(node.left)} / {num(node.right)}
-        </>
+    <div className={`tsb-leaf tsb-leaf--${state}${closest ? ' is-closest' : ''}`}>
+      <div className="tsb-leaf__head">
+        <Tick node={node} />
+        <span className="tsb-leaf__say">{leaf(node.text, node.kind, node.op)}</span>
+        {closest && (
+          <span className="tsb-leaf__flag" title="Changing just this one part would have flipped the decision">
+            {node.passed ? 'closest to failing' : 'closest to passing'}
+          </span>
+        )}
+      </div>
+      <code className="tsb-leaf__code">{node.text}</code>
+      {node.unknown ? (
+        <div className="tsb-leaf__wait">
+          ⏳ Not enough history yet: this indicator has no value on this candle.
+        </div>
+      ) : node.kind === 'COMPARE' ? (
+        <CompareGauge node={node} />
       ) : (
         <>
-          {num(node.left)} {node.op} {num(node.right)}
+          <CrossGauge node={node} />
+          {(crossStory(node) ?? node.note) && (
+            <div className="tsb-leaf__note">{crossStory(node) ?? node.note}</div>
+          )}
         </>
       )}
-      {node.distance != null && (
-        <span className="tsb-dbg__muted">
-          {' '}
-          · {node.passed ? 'margin' : 'off by'} {num(node.distance)}
-          {node.relativeDistance != null && ` (${pct(node.relativeDistance)})`}
-        </span>
-      )}
+    </div>
+  )
+}
+
+function Tick({ node }: { node: ConditionNodeDto }) {
+  const state = node.passed ? 'pass' : node.unknown ? 'unknown' : 'fail'
+  return (
+    <span className={`tsb-tick tsb-tick--${state}`} aria-label={state}>
+      {node.passed ? '✓' : node.unknown ? '…' : '✗'}
     </span>
   )
 }

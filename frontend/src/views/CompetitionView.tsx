@@ -1,14 +1,43 @@
-/** Placeholder for the competition league — forward paper-trading
- *  contests with a live leaderboard. Ships in a later phase. */
+import { useState } from 'react'
+import CompetitionList from '../competition/CompetitionList'
+import CompetitionDetail from '../competition/CompetitionDetail'
+import CreateCompetition from '../competition/CreateCompetition'
+import '../competition/competition.css'
+
+/**
+ * Competitions, following the sequence diagram:
+ * Setup (admin creates, sets the rules) → Join (traders submit, entries
+ * lock) → Run (every new candle, the live leaderboard and your rule
+ * dashboard) → End (passed / failed, final cumulative ranks).
+ */
 export default function CompetitionView() {
+  const [screen, setScreen] = useState<{ kind: 'list' } | { kind: 'create' } | { kind: 'detail'; id: number }>({
+    kind: 'list',
+  })
+
+  if (screen.kind === 'create') {
+    return (
+      <section className="panel">
+        <CreateCompetition
+          onDone={(id) => setScreen({ kind: 'detail', id })}
+          onCancel={() => setScreen({ kind: 'list' })}
+        />
+      </section>
+    )
+  }
+  if (screen.kind === 'detail') {
+    return (
+      <section className="panel">
+        <CompetitionDetail id={screen.id} onBack={() => setScreen({ kind: 'list' })} />
+      </section>
+    )
+  }
   return (
     <section className="panel">
-      <h2>Competitions</h2>
-      <p className="note">
-        Forward paper-trading leagues are coming: lock in a strategy, let it
-        trade unseen market data for a week, and climb a live leaderboard.
-        No lookahead, no excuses — the fairest test there is.
-      </p>
+      <CompetitionList
+        onOpen={(id) => setScreen({ kind: 'detail', id })}
+        onCreate={() => setScreen({ kind: 'create' })}
+      />
     </section>
   )
 }

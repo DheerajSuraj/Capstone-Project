@@ -206,7 +206,7 @@ export default function PriceChart({
       />
       {onBarClick && (
         <div className="tsb-dbg__hint">
-          Click any candle to see why the strategy did or didn't trade there.
+          👆 Click any candle to ask “why did (or didn’t) it trade here?”
         </div>
       )}
     </div>

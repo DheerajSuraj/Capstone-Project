@@ -24,7 +24,8 @@ import java.util.List;
  * </ul>
  *
  * <p>Everything here runs OFFLINE relative to user requests: only the
- * backfill runner and the scheduled sync call it. The roadmap invariant —
+ * backfill runner, the scheduled sync and the {@link LivePriceFeed} poll
+ * call it. The roadmap invariant —
  * nothing in the request path touches an external network — is preserved
  * because no controller can reach this class.
  */
@@ -129,5 +130,24 @@ public class BinanceClient {
             }
         }
         return all;
+    }
+
+    /**
+     * Last traded price from the public ticker endpoint
+     * ({@code /api/v3/ticker/price}, weight 2, no key). Called only by
+     * {@link LivePriceFeed}'s background poll, never from a request.
+     */
+    public double fetchLastPrice(String ticker) {
+        java.util.Map<String, Object> body = apiClient.get()
+                .uri(uri -> uri.path("/api/v3/ticker/price")
+                        .queryParam("symbol", ticker)
+                        .build())
+                .retrieve()
+                .body(new ParameterizedTypeReference<>() {
+                });
+        if (body == null || body.get("price") == null) {
+            throw new IllegalStateException("no price in ticker response for " + ticker);
+        }
+        return Double.parseDouble(String.valueOf(body.get("price")));
     }
 }

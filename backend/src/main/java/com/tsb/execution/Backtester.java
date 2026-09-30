@@ -1,7 +1,6 @@
 package com.tsb.execution;
 
 import com.tsb.compiler.CompiledStrategy;
-import com.tsb.compiler.ConstFold;
 import com.tsb.compiler.Expr;
 import com.tsb.compiler.StrategyAst;
 import com.tsb.marketdata.CandleSeries;
@@ -62,6 +61,20 @@ public final class Backtester {
      */
     public BacktestResult run(CompiledStrategy strategy, CandleSeries series,
                               ExchangeRules rules, BarObserver observer) {
+        return run(strategy, series, rules, observer, 0);
+    }
+
+    /**
+     * Same run, but no rule is checked before bar {@code earliestTradeBar}.
+     *
+     * <p>For forward competitions: the series starts early enough to warm the
+     * indicators up on history, but trading must begin exactly when the
+     * competition does — for every entry, whatever its warm-up. Bars before
+     * that hold flat capital, like warm-up bars.
+     */
+    public BacktestResult run(CompiledStrategy strategy, CandleSeries series,
+                              ExchangeRules rules, BarObserver observer,
+                              int earliestTradeBar) {
         int n = series.size();
         double[] equity = new double[n];
         List<Trade> trades = new ArrayList<>();
@@ -87,7 +100,8 @@ public final class Backtester {
         double trailingPct = 0;
 
         List<Pending> pending = new ArrayList<>();
-        int firstBar = Math.min(strategy.warmupBars(), n);
+        int firstBar = Math.min(Math.max(strategy.warmupBars(),
+                Math.max(0, earliestTradeBar)), n);
 
         for (int i = firstBar; i < n; i++) {
             double open = series.open()[i];
@@ -107,7 +121,7 @@ public final class Backtester {
                                 BarObserver.FillOutcome.IGNORED_ALREADY_LONG);
                         continue; // single position: ignore add-ons
                     }
-                    double desired = desiredBuyQty(b.sizing(), cash, open, fee);
+                    double desired = Sizing.desiredBuyQty(b.sizing(), cash, open, fee);
                     double rounded = rules.roundQty(desired);
                     if (rounded <= 0 || !rules.meetsMinNotional(rounded, open)) {
                         report(observer, order, i,
@@ -130,14 +144,14 @@ public final class Backtester {
                         continue; // nothing to sell
                     }
                     double sellQty = Math.min(qty,
-                            rules.roundQty(desiredSellQty(s.sizing(), qty)));
+                            rules.roundQty(Sizing.desiredSellQty(s.sizing(), qty)));
                     if (sellQty <= 0) {
                         report(observer, order, i,
                                 BarObserver.FillOutcome.REJECTED_TOO_SMALL);
                         continue;
                     }
                     report(observer, order, i, BarObserver.FillOutcome.FILLED);
-                    cash += exitProceeds(sellQty, open, fee);
+                    cash += Sizing.exitProceeds(sellQty, open, fee);
                     if (sellQty >= qty - 1e-12) {
                         trades.add(makeTrade(series, entryBar, i, qty,
                                 entryPrice, open, entryFees, fee,
@@ -189,7 +203,7 @@ public final class Backtester {
                 }
 
                 if (exitLevel != null) {
-                    cash += exitProceeds(qty, exitLevel, fee);
+                    cash += Sizing.exitProceeds(qty, exitLevel, fee);
                     trades.add(makeTrade(series, entryBar, i, qty, entryPrice,
                             exitLevel, entryFees, fee, reason));
                     qty = 0;
@@ -239,7 +253,7 @@ public final class Backtester {
         double finalEquity = cash + qty * series.close()[n - 1];
         if (qty > 0) {
             double lastClose = series.close()[n - 1];
-            cash += exitProceeds(qty, lastClose, fee);
+            cash += Sizing.exitProceeds(qty, lastClose, fee);
             trades.add(makeTrade(series, entryBar, n - 1, qty, entryPrice,
                     lastClose, entryFees, fee, Trade.ExitReason.END_OF_DATA));
             finalEquity = cash;
@@ -257,48 +271,13 @@ public final class Backtester {
         observer.onOrder(o.bar(), fillBar, o.rule(), o.stmt(), outcome);
     }
 
-    // ── Sizing ──────────────────────────────────────────────────────────
-
-    private static double desiredBuyQty(StrategyAst.Sizing sizing, double cash,
-                                        double price, double fee) {
-        double budget = switch (sizing) {
-            case StrategyAst.Sizing.All ignored -> cash;
-            case StrategyAst.Sizing.PercentOf p ->
-                    cash * ((Expr.PercentLit) p.percent()).value() / 100.0;
-            case StrategyAst.Sizing.Quantity q -> {
-                double amount = ConstFold.fold(q.amount()).orElse(0.0);
-                yield amount * price; // fixed base-asset qty -> its notional
-            }
-        };
-        // Budget covers notional + fee: qty*price*(1+fee) <= budget.
-        return budget / (price * (1 + fee));
-    }
-
-    private static double desiredSellQty(StrategyAst.Sizing sizing, double held) {
-        return switch (sizing) {
-            case StrategyAst.Sizing.All ignored -> held;
-            case StrategyAst.Sizing.PercentOf p ->
-                    held * ((Expr.PercentLit) p.percent()).value() / 100.0;
-            case StrategyAst.Sizing.Quantity q ->
-                    ConstFold.fold(q.amount()).orElse(0.0);
-        };
-    }
-
-    private static double exitProceeds(double qty, double price, double fee) {
-        double notional = qty * price;
-        return notional - notional * fee;
-    }
-
     private static Trade makeTrade(CandleSeries s, int entryBar, int exitBar,
                                    double qty, double entryPrice,
                                    double exitPrice, double entryFees,
                                    double fee, Trade.ExitReason reason) {
-        double exitFee = qty * exitPrice * fee;
-        double pnl = qty * (exitPrice - entryPrice) - entryFees - exitFee;
-        return new Trade(entryBar, exitBar,
-                Instant.ofEpochMilli(s.openTimeMillis()[entryBar]),
-                Instant.ofEpochMilli(s.openTimeMillis()[exitBar]),
-                qty, entryPrice, exitPrice, entryFees + exitFee, pnl, reason);
+        return Sizing.trade(entryBar, exitBar, s.openTimeMillis()[entryBar],
+                s.openTimeMillis()[exitBar], qty, entryPrice, exitPrice,
+                entryFees, fee, reason);
     }
 
     private static double maxDrawdownPct(double[] equity, int from) {

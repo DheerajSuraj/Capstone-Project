@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import HomeView from './views/HomeView'
 import BuilderView from './views/BuilderView'
 import StrategiesView from './views/StrategiesView'
 import CompetitionView from './views/CompetitionView'
+import ForumView from './views/ForumView'
 import { useAuth } from './auth'
 import AuthOverlay from './auth/AuthOverlay'
 
@@ -25,17 +26,18 @@ const STARTER = `strategy "My Strategy" {
 }
 `
 
-type View = 'home' | 'builder' | 'strategies' | 'competition'
+type View = 'home' | 'builder' | 'strategies' | 'competition' | 'forum'
 
 const NAV: { view: View; glyph: string; label: string }[] = [
   { view: 'home', glyph: '▥', label: 'Live chart' },
   { view: 'builder', glyph: '⬚', label: 'Builder' },
   { view: 'strategies', glyph: '☰', label: 'My strategies' },
   { view: 'competition', glyph: '⚑', label: 'Competitions' },
+  { view: 'forum', glyph: '❝', label: 'Forum' },
 ]
 
 /** The live chart reads public candle data; everything else is owned. */
-const isPublic = (view: View) => view === 'home'
+const isPublic = (view: View) => view === 'home' || view === 'forum'
 
 export default function App() {
   const { status, user, signOut } = useAuth()
@@ -46,6 +48,9 @@ export default function App() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [authOpen, setAuthOpen] = useState(false)
   const [pendingView, setPendingView] = useState<View | null>(null)
+  // A chart snapshot on its way from the Live chart to a new forum post.
+  const [snapshot, setSnapshot] = useState<Blob | null>(null)
+  const clearSnapshot = useCallback(() => setSnapshot(null), [])
 
   // Send them where they were headed once they sign in, rather than making
   // them find the button again.
@@ -114,7 +119,19 @@ export default function App() {
       </nav>
 
       <main className="content">
-        {view === 'home' && <HomeView />}
+        {view === 'home' && (
+          <HomeView
+            onSignIn={() => setAuthOpen(true)}
+            onSnapshot={(png) => {
+              setSnapshot(png)
+              if (status === 'authenticated') setView('forum')
+              else {
+                setPendingView('forum')
+                setAuthOpen(true)
+              }
+            }}
+          />
+        )}
         {view === 'builder' && (
           <BuilderView
             source={source}
@@ -127,6 +144,15 @@ export default function App() {
         )}
         {view === 'strategies' && <StrategiesView onEdit={editStrategy} />}
         {view === 'competition' && <CompetitionView />}
+        {view === 'forum' && (
+          <ForumView
+            signedIn={status === 'authenticated'}
+            onSignIn={() => setAuthOpen(true)}
+            snapshot={snapshot}
+            onSnapshotUsed={clearSnapshot}
+            onOpenStrategies={() => go('strategies')}
+          />
+        )}
       </main>
 
       <AuthOverlay

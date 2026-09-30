@@ -6,7 +6,6 @@ import com.tsb.execution.BacktestResult;
 import com.tsb.execution.EquityCurves;
 import com.tsb.execution.Metrics;
 import com.tsb.marketdata.CandleSeries;
-import com.tsb.user.User;
 import com.tsb.user.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,7 +22,10 @@ import java.util.Optional;
  * a version is only ever INSERTED, and only if its source compiled
  * cleanly — so everything in strategy_versions is runnable, always.
  *
- * <p>Until the auth phase, all operations act as the seeded 'dev' user.
+ * <p><b>Ownership:</b> every method takes the acting user's id and only
+ * ever touches that user's strategies. Someone else's strategy is reported
+ * exactly like a missing one ("no strategy 7"), so ids cannot be probed to
+ * find out what exists — and a competition rival cannot read your source.
  */
 @Service
 public class StrategyService {
@@ -72,20 +74,19 @@ public class StrategyService {
     }
 
     @Transactional
-    public SaveOutcome create(String name, String source) {
+    public SaveOutcome create(long userId, String name, String source) {
         CompilationService.Outcome compiled = compilation.compile(source);
         if (!compiled.ok()) {
             return new SaveOutcome(Optional.empty(), compiled.diagnostics());
         }
-        Strategy strategy = strategies.save(new Strategy(devUserId(), name));
+        Strategy strategy = strategies.save(new Strategy(userId, name));
         return new SaveOutcome(Optional.of(insertVersion(strategy, 1,
                 source, compiled.strategy().orElseThrow())), List.of());
     }
 
     @Transactional
-    public SaveOutcome addVersion(long strategyId, String source) {
-        Strategy strategy = strategies.findById(strategyId).orElseThrow(() ->
-                new IllegalArgumentException("no strategy " + strategyId));
+    public SaveOutcome addVersion(long userId, long strategyId, String source) {
+        Strategy strategy = owned(userId, strategyId);
         CompilationService.Outcome compiled = compilation.compile(source);
         if (!compiled.ok()) {
             return new SaveOutcome(Optional.empty(), compiled.diagnostics());
@@ -106,8 +107,9 @@ public class StrategyService {
     /** Runs a stored version and persists the result. Reproducibility by
      *  construction: the run references the immutable version it executed. */
     @Transactional
-    public RunOutcome runVersion(long strategyId, int versionNumber,
+    public RunOutcome runVersion(long userId, long strategyId, int versionNumber,
                                  Instant from, Instant to) {
+        owned(userId, strategyId);
         StrategyVersion version = versions
                 .findByStrategyIdAndVersionNumber(strategyId, versionNumber)
                 .orElseThrow(() -> new IllegalArgumentException(
@@ -143,29 +145,46 @@ public class StrategyService {
 
     // ── Queries ─────────────────────────────────────────────────────────
 
-    public List<Strategy> listStrategies() {
-        return strategies.findByUserIdOrderByUpdatedAtDesc(devUserId());
+    public List<Strategy> listStrategies(long userId) {
+        return strategies.findByUserIdOrderByUpdatedAtDesc(userId);
     }
 
-    public Optional<Strategy> getStrategy(long id) {
-        return strategies.findById(id);
+    public Optional<Strategy> getStrategy(long userId, long id) {
+        return strategies.findById(id).filter(s -> s.getUserId().equals(userId));
     }
 
+    /** Versions of a strategy the caller has already been shown they own. */
     public List<StrategyVersion> listVersions(long strategyId) {
         return versions.findByStrategyIdOrderByVersionNumberDesc(strategyId);
     }
 
-    public Optional<StrategyVersion> getVersion(long strategyId, int number) {
-        return versions.findByStrategyIdAndVersionNumber(strategyId, number);
+    public Optional<StrategyVersion> getVersion(long userId, long strategyId, int number) {
+        return getStrategy(userId, strategyId).flatMap(s ->
+                versions.findByStrategyIdAndVersionNumber(strategyId, number));
     }
 
-    public List<BacktestRun> listRuns(long strategyId) {
+    public List<BacktestRun> listRuns(long userId, long strategyId) {
+        owned(userId, strategyId);
         return runs.findByStrategy(strategyId);
     }
 
-    private Long devUserId() {
-        return users.findByUsername("dev").map(User::getId).orElseThrow(() ->
-                new IllegalStateException("dev user missing — V3 migration not applied?"));
+    /** For competition entries: a version, only if this user owns it. */
+    public Optional<StrategyVersion> ownedVersion(long userId, long strategyId, int number) {
+        return getVersion(userId, strategyId, number);
+    }
+
+    /** Name of a strategy by id, for leaderboards (never its source). */
+    public Optional<String> strategyName(long strategyId) {
+        return strategies.findById(strategyId).map(Strategy::getName);
+    }
+
+    public Optional<StrategyVersion> versionById(long versionId) {
+        return versions.findById(versionId);
+    }
+
+    private Strategy owned(long userId, long strategyId) {
+        return getStrategy(userId, strategyId).orElseThrow(() ->
+                new IllegalArgumentException("no strategy " + strategyId));
     }
 
     private static Double finiteOrNull(double v) {

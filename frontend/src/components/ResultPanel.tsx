@@ -119,6 +119,8 @@ export default function ResultPanel({
             <DecisionPanel
               run={run}
               timeMillis={selectedTime}
+              times={candles.t}
+              onNavigate={setSelectedTime}
               onClose={() => setSelectedTime(null)}
             />
           )}

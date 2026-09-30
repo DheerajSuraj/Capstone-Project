@@ -293,6 +293,283 @@ export interface SignalResponse {
   confluence: ConfluenceReportDto | null
 }
 
+// ── Paper trading ─────────────────────────────────────────────────────
+
+export type PaperSide = 'BUY' | 'SELL'
+export type PaperType = 'MARKET' | 'LIMIT'
+
+export interface PaperPositionDto {
+  symbol: string
+  baseAsset: string
+  side: 'LONG' | 'SHORT'
+  qty: number
+  /** Average entry price, fees not included. */
+  avgPrice: number
+  /** Fees paid to open it, charged when it closes. */
+  entryFees: number
+  price: number | null
+  value: number
+  unrealizedPnl: number
+  unrealizedPct: number
+  priceLive: boolean
+}
+
+export interface PaperOrderDto {
+  id: number
+  symbol: string
+  side: PaperSide
+  type: PaperType
+  qty: number
+  limitPrice: number | null
+  status: 'OPEN' | 'FILLED' | 'CANCELLED' | 'REJECTED'
+  fillPrice: number | null
+  fee: number | null
+  realizedPnl: number | null
+  rejectReason: string | null
+  createdAt: string
+  filledAt: string | null
+}
+
+export interface PaperAccountDto {
+  startingCash: number
+  cash: number
+  equity: number
+  /** What more can be opened now: 1× leverage. */
+  buyingPower: number
+  /** Promised to open limit orders. */
+  reserved: number
+  realizedPnl: number
+  unrealizedPnl: number
+  totalPnl: number
+  returnPct: number
+  feesPaid: number
+  resets: number
+  resetAt: string
+  positions: PaperPositionDto[]
+  openOrders: PaperOrderDto[]
+  history: PaperOrderDto[]
+  prices: Record<string, number>
+  serverTime: string
+}
+
+export interface PaperOrderRequest {
+  symbol: string
+  side: PaperSide
+  type: PaperType
+  qty?: number
+  quoteAmount?: number
+  limitPrice?: number
+}
+
+// ── Competitions ──────────────────────────────────────────────────────
+
+export type CompetitionStatus = 'OPEN' | 'RUNNING' | 'FINISHED' | 'CANCELLED'
+export type EntryStatus = 'ACTIVE' | 'ELIMINATED' | 'PASSED' | 'FAILED'
+
+export interface CompetitionRulesDto {
+  startingCapital: number
+  feePercent: number
+  profitTargetPct: number
+  maxDrawdownPct: number
+  dailyLossLimitPct: number
+  maxTradesPerDay: number
+  minTradingDays: number
+}
+
+export interface CompetitionSummaryDto {
+  id: number
+  name: string
+  symbol: string
+  timeframe: string
+  status: CompetitionStatus
+  startsAt: string
+  endsAt: string
+  lastCandle: string | null
+  entryCount: number
+  myEntryCount: number
+  maxEntriesPerUser: number
+  rules: CompetitionRulesDto
+}
+
+export interface CompetitionListDto {
+  canCreate: boolean
+  serverTime: string
+  competitions: CompetitionSummaryDto[]
+}
+
+export interface EntryViewDto {
+  id: number
+  rank: number | null
+  username: string
+  strategy: string
+  mine: boolean
+  status: EntryStatus
+  statusReason: string | null
+  statusCandle: string | null
+  submittedAt: string
+  sourceHash: string
+  equity: number
+  returnPct: number
+  profitTargetPct: number
+  drawdownPct: number
+  maxDrawdownSeen: number
+  maxDrawdownPct: number
+  dailyLossPct: number
+  dailyLossLimitPct: number
+  tradesToday: number
+  maxTradesPerDay: number
+  tradingDays: number
+  minTradingDays: number
+  halted: boolean
+  haltReason: string | null
+  inTrade: boolean
+  qty: number
+  entryPrice: number
+  tradeCount: number
+  lastCandle: string | null
+}
+
+export interface CompetitionDetailDto {
+  competition: CompetitionSummaryDto
+  description: string
+  isAdmin: boolean
+  canEnter: boolean
+  serverTime: string
+  myEntries: EntryViewDto[]
+}
+
+export interface TraderViewDto {
+  rank: number
+  username: string
+  entries: number
+  passed: number
+  eliminated: number
+  cumulativePnl: number
+  cumulativeReturnPct: number
+  mine: boolean
+}
+
+export interface LeaderboardDto {
+  status: CompetitionStatus
+  lastCandle: string | null
+  serverTime: string
+  entries: EntryViewDto[]
+  traders: TraderViewDto[]
+}
+
+export interface CompetitionTradeDto {
+  entryTime: string
+  entryPrice: number
+  qty: number
+  exitTime: string | null
+  exitPrice: number | null
+  fees: number | null
+  pnl: number | null
+  exitReason: string | null
+}
+
+export interface CreateCompetitionRequest {
+  name: string
+  description: string
+  symbol: string
+  timeframe: string
+  startingCapital: number
+  feePercent: number
+  profitTargetPct: number
+  maxDrawdownPct: number
+  dailyLossLimitPct: number
+  maxTradesPerDay: number
+  minTradingDays: number
+  maxEntriesPerUser: number
+  startsAt: string | null
+  durationHours: number
+}
+
+// ── Forum ─────────────────────────────────────────────────────────────
+
+export type ForumCategory = 'STRATEGIES' | 'MARKET' | 'HELP' | 'COMPETITIONS'
+
+export interface ForumSummaryDto {
+  id: number
+  author: string
+  category: ForumCategory
+  title: string
+  excerpt: string
+  createdAt: string
+  likes: number
+  comments: number
+  liked: boolean
+  mine: boolean
+  thumbnail: string | null
+  imageCount: number
+  strategyName: string | null
+  strategyReturnPct: number | null
+  hidden: boolean
+}
+
+export interface ForumListDto {
+  posts: ForumSummaryDto[]
+  hasMore: boolean
+  signedIn: boolean
+  moderator: boolean
+}
+
+export interface ForumImageDto {
+  id: number
+  url: string
+  width: number
+  height: number
+}
+
+export interface SharedStrategyDto {
+  name: string
+  version: number
+  symbol: string
+  timeframe: string
+  source: string | null
+  results: {
+    returnPct?: number
+    maxDrawdownPct?: number
+    winRate?: number
+    trades?: number
+    sharpe?: number | null
+    profitFactor?: number | null
+    from?: string
+    to?: string
+    curve?: { t: number; equity: number }[]
+    error?: string
+  } | null
+}
+
+export interface ForumCommentDto {
+  id: number
+  author: string
+  body: string
+  createdAt: string
+  mine: boolean
+}
+
+export interface ForumPostDto {
+  post: ForumSummaryDto
+  body: string
+  images: ForumImageDto[]
+  strategy: SharedStrategyDto | null
+  comments: ForumCommentDto[]
+  reportedByMe: boolean
+  moderator: boolean
+  hidden: boolean
+  hiddenReason: string | null
+}
+
+export interface NewPost {
+  category: ForumCategory
+  title: string
+  body: string
+  strategyId?: number
+  versionNumber?: number
+  images: Blob[]
+}
+
 /**
  * Several requests can be in flight at once, so several can hit an expired
  * token at once. Each must NOT refresh independently: the first would
@@ -329,7 +606,9 @@ async function request<T>(
   const token = getAccessToken()
   const headers = new Headers(init.headers)
   if (token) headers.set('Authorization', `Bearer ${token}`)
-  if (init.body && !headers.has('Content-Type')) {
+  // FormData (picture uploads) sets its own multipart Content-Type with the
+  // boundary; labelling it JSON would break the upload.
+  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 
@@ -419,6 +698,105 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ...run, nearMiss }),
     }),
+
+  // ── Paper trading ──
+  paperAccount: (): Promise<PaperAccountDto> =>
+    request<PaperAccountDto>('/api/paper/account'),
+
+  paperOrder: (
+    body: PaperOrderRequest,
+  ): Promise<{ order: PaperOrderDto; account: PaperAccountDto }> =>
+    request('/api/paper/orders', { method: 'POST', body: JSON.stringify(body) }),
+
+  paperClose: (
+    symbol: string,
+  ): Promise<{ order: PaperOrderDto; account: PaperAccountDto }> =>
+    request(`/api/paper/positions/${symbol}/close`, { method: 'POST' }),
+
+  paperCancel: (id: number): Promise<PaperAccountDto> =>
+    request<PaperAccountDto>(`/api/paper/orders/${id}/cancel`, { method: 'POST' }),
+
+  paperReset: (): Promise<PaperAccountDto> =>
+    request<PaperAccountDto>('/api/paper/reset', { method: 'POST' }),
+
+  // ── Competitions ──
+  competitions: (): Promise<CompetitionListDto> =>
+    request<CompetitionListDto>('/api/competitions'),
+
+  competition: (id: number): Promise<CompetitionDetailDto> =>
+    request<CompetitionDetailDto>(`/api/competitions/${id}`),
+
+  createCompetition: (body: CreateCompetitionRequest): Promise<CompetitionSummaryDto> =>
+    request<CompetitionSummaryDto>('/api/competitions', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  cancelCompetition: (id: number): Promise<CompetitionSummaryDto> =>
+    request<CompetitionSummaryDto>(`/api/competitions/${id}/cancel`, { method: 'POST' }),
+
+  enterCompetition: (
+    id: number,
+    strategyId: number,
+    versionNumber: number,
+  ): Promise<EntryViewDto> =>
+    request<EntryViewDto>(`/api/competitions/${id}/entries`, {
+      method: 'POST',
+      body: JSON.stringify({ strategyId, versionNumber }),
+    }),
+
+  leaderboard: (id: number): Promise<LeaderboardDto> =>
+    request<LeaderboardDto>(`/api/competitions/${id}/leaderboard`),
+
+  entryTrades: (id: number, entryId: number): Promise<CompetitionTradeDto[]> =>
+    request<CompetitionTradeDto[]>(`/api/competitions/${id}/entries/${entryId}/trades`),
+
+  // ── Forum ──
+  forumPosts: (p: { category?: string; q?: string; sort?: 'new' | 'top'; page?: number }): Promise<ForumListDto> => {
+    const qs = new URLSearchParams()
+    if (p.category) qs.set('category', p.category)
+    if (p.q) qs.set('q', p.q)
+    if (p.sort) qs.set('sort', p.sort)
+    if (p.page) qs.set('page', String(p.page))
+    return request<ForumListDto>(`/api/forum/posts?${qs}`)
+  },
+
+  forumPost: (id: number): Promise<ForumPostDto> =>
+    request<ForumPostDto>(`/api/forum/posts/${id}`),
+
+  forumCreate: (p: NewPost): Promise<{ id: number }> => {
+    const form = new FormData()
+    form.set('category', p.category)
+    form.set('title', p.title)
+    form.set('body', p.body)
+    if (p.strategyId != null && p.versionNumber != null) {
+      form.set('strategyId', String(p.strategyId))
+      form.set('versionNumber', String(p.versionNumber))
+    }
+    p.images.forEach((img, i) => form.append('images', img, `image-${i}`))
+    return request<{ id: number }>('/api/forum/posts', { method: 'POST', body: form })
+  },
+
+  forumDelete: (id: number): Promise<{ ok: boolean }> =>
+    request(`/api/forum/posts/${id}`, { method: 'DELETE' }),
+
+  forumLike: (id: number): Promise<{ liked: boolean; likes: number }> =>
+    request(`/api/forum/posts/${id}/like`, { method: 'POST' }),
+
+  forumComment: (id: number, text: string): Promise<ForumCommentDto> =>
+    request(`/api/forum/posts/${id}/comments`, { method: 'POST', body: JSON.stringify({ text }) }),
+
+  forumDeleteComment: (id: number): Promise<{ ok: boolean }> =>
+    request(`/api/forum/comments/${id}`, { method: 'DELETE' }),
+
+  forumReport: (id: number, text: string): Promise<{ ok: boolean }> =>
+    request(`/api/forum/posts/${id}/report`, { method: 'POST', body: JSON.stringify({ text }) }),
+
+  forumHide: (id: number, hidden: boolean): Promise<{ hidden: boolean }> =>
+    request(`/api/forum/posts/${id}/hide`, { method: 'POST', body: JSON.stringify({ hidden }) }),
+
+  forumCopyStrategy: (id: number): Promise<{ ok: boolean; strategyId: number | null; versionNumber: number | null }> =>
+    request(`/api/forum/posts/${id}/copy-strategy`, { method: 'POST' }),
 
   // Public endpoint — works signed out, which is what the landing chart needs.
   getCandles: (

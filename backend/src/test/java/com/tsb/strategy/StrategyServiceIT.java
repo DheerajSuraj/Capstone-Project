@@ -48,9 +48,12 @@ class StrategyServiceIT {
     private JdbcTemplate jdbc;
 
     private long symbolId;
+    /** Strategies need an owner; the seeded 'dev' user from V3 is one. */
+    private long owner;
 
     @BeforeEach
     void seedSymbolAndBars() {
+        owner = jdbc.queryForObject("SELECT id FROM users WHERE username = 'dev'", Long.class);
         jdbc.update("INSERT INTO symbols (ticker, base_asset, quote_asset, "
                 + "tick_size, step_size, min_notional) "
                 + "VALUES ('TESTUSDT','TEST','USDT',0.01,0.001,1.0) "
@@ -86,22 +89,22 @@ class StrategyServiceIT {
     @Test
     @DisplayName("create -> addVersion -> run: the persisted lifecycle")
     void lifecycle() {
-        StrategyService.SaveOutcome created = service.create("Persisted", SOURCE);
+        StrategyService.SaveOutcome created = service.create(owner, "Persisted", SOURCE);
         assertTrue(created.ok());
         long strategyId = created.version().orElseThrow().getStrategyId();
         assertEquals(1, created.version().orElseThrow().getVersionNumber());
         assertEquals("TESTUSDT", created.version().orElseThrow().getSymbol());
 
-        StrategyService.SaveOutcome v2 = service.addVersion(strategyId,
+        StrategyService.SaveOutcome v2 = service.addVersion(owner, strategyId,
                 SOURCE.replace("> 15", "> 12"));
         assertEquals(2, v2.version().orElseThrow().getVersionNumber());
 
         StrategyService.RunOutcome run =
-                service.runVersion(strategyId, 1, null, null);
+                service.runVersion(owner, strategyId, 1, null, null);
         assertTrue(run.outcome().ok());
         long runId = run.runId().orElseThrow();
 
-        List<BacktestRun> stored = service.listRuns(strategyId);
+        List<BacktestRun> stored = service.listRuns(owner, strategyId);
         assertEquals(1, stored.size());
         assertEquals(runId, stored.get(0).getId());
         assertEquals(1, stored.get(0).getTradeCount());
@@ -114,7 +117,7 @@ class StrategyServiceIT {
     @DisplayName("a version that does not compile is never persisted")
     void brokenSourceRejected() {
         StrategyService.SaveOutcome outcome =
-                service.create("Other", "strategy \"X\" { rule r { } }");
+                service.create(owner, "Other", "strategy \"X\" { rule r { } }");
         assertTrue(outcome.diagnostics().size() > 0);
         Integer count = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM strategies WHERE name='Other'", Integer.class);
@@ -124,7 +127,7 @@ class StrategyServiceIT {
     @Test
     @DisplayName("THE TRIGGER: raw SQL UPDATE on a version is rejected by Postgres itself")
     void appendOnlyEnforcedByDatabase() {
-        StrategyService.SaveOutcome created = service.create("Persisted", SOURCE);
+        StrategyService.SaveOutcome created = service.create(owner, "Persisted", SOURCE);
         long versionId = created.version().orElseThrow().getId();
 
         // ORM completely bypassed — this is the strongest possible probe.

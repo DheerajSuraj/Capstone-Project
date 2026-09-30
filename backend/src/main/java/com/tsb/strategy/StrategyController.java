@@ -1,5 +1,6 @@
 package com.tsb.strategy;
 
+import com.tsb.auth.CurrentUser;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
@@ -29,23 +30,29 @@ import java.util.List;
 public class StrategyController {
 
     private final StrategyService service;
+    private final CurrentUser currentUser;
 
-    public StrategyController(StrategyService service) {
+    public StrategyController(StrategyService service, CurrentUser currentUser) {
         this.service = service;
+        this.currentUser = currentUser;
+    }
+
+    private long me() {
+        return currentUser.requireId();
     }
 
     // ── Create & version ────────────────────────────────────────────────
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
     public SaveResponse create(@RequestBody @jakarta.validation.Valid CreateRequest req) {
-        return SaveResponse.from(service.create(req.name(), req.source()));
+        return SaveResponse.from(service.create(me(), req.name(), req.source()));
     }
 
     @PostMapping(path = "/{id}/versions", consumes = MediaType.APPLICATION_JSON_VALUE)
     public SaveResponse addVersion(@PathVariable long id,
                                    @RequestBody @jakarta.validation.Valid VersionRequest req) {
         try {
-            return SaveResponse.from(service.addVersion(id, req.source()));
+            return SaveResponse.from(service.addVersion(me(), id, req.source()));
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
         }
@@ -67,7 +74,7 @@ public class StrategyController {
                     "invalid from/to — use ISO-8601 like 2025-01-01T00:00:00Z");
         }
         try {
-            StrategyService.RunOutcome run = service.runVersion(id, version, from, to);
+            StrategyService.RunOutcome run = service.runVersion(me(), id, version, from, to);
             BacktestService.Outcome o = run.outcome();
             if (!o.ok()) {
                 return new RunResponse(false, null,
@@ -87,13 +94,13 @@ public class StrategyController {
 
     @GetMapping
     public List<StrategyDto> list() {
-        return service.listStrategies().stream().map(s -> StrategyDto.from(s,
+        return service.listStrategies(me()).stream().map(s -> StrategyDto.from(s,
                 service.listVersions(s.getId()))).toList();
     }
 
     @GetMapping("/{id}")
     public StrategyDto get(@PathVariable long id) {
-        Strategy s = service.getStrategy(id).orElseThrow(() ->
+        Strategy s = service.getStrategy(me(), id).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "no strategy " + id));
         return StrategyDto.from(s, service.listVersions(id));
@@ -101,14 +108,18 @@ public class StrategyController {
 
     @GetMapping("/{id}/versions/{version}")
     public VersionDto getVersion(@PathVariable long id, @PathVariable int version) {
-        return service.getVersion(id, version).map(VersionDto::from)
+        return service.getVersion(me(), id, version).map(VersionDto::from)
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "no version " + version));
     }
 
     @GetMapping("/{id}/runs")
     public List<RunSummaryDto> runs(@PathVariable long id) {
-        return service.listRuns(id).stream().map(RunSummaryDto::from).toList();
+        try {
+            return service.listRuns(me(), id).stream().map(RunSummaryDto::from).toList();
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        }
     }
 
     @ResponseStatus(HttpStatus.NOT_FOUND)

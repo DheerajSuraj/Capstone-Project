@@ -3,8 +3,14 @@ import {
   CandlestickSeries,
   ColorType,
   createChart,
+  createSeriesMarkers,
+  LineStyle,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
+  type SeriesMarker,
+  type Time,
   type UTCTimestamp,
 } from 'lightweight-charts'
 import IndicatorPicker from '../indicators/IndicatorPicker'
@@ -25,15 +31,51 @@ interface HLine { kind: 'hline'; a: Point }
 interface Trend { kind: 'trend'; a: Point; b: Point }
 type Drawing = HLine | Trend
 
+/** Things the page wants painted on the chart — paper-trading positions,
+ *  orders and fills. The chart only draws them; it owns none of them. */
+export interface ChartOverlays {
+  lines: { price: number; color: string; title: string; dashed?: boolean }[]
+  markers: { timeMillis: number; side: 'BUY' | 'SELL'; text: string }[]
+  /** Clickable labels pinned to a price, like TradingView's position and
+   *  order tags: text, live P&L and a ✕ that closes or cancels. */
+  tags?: ChartTag[]
+}
+
+export interface ChartTag {
+  id: string
+  price: number
+  label: string
+  pnl?: string
+  tone: 'up' | 'down' | 'flat' | 'order'
+  onAction: () => void
+  actionTitle: string
+}
+
 export default function DrawableChart({
   symbol,
   timeframe,
   height,
+  onPrice,
+  overlays,
+  onSnapshot,
 }: {
   symbol: string
   timeframe: string
   height: number | string
+  /** Every live tick's last price, for the order ticket. */
+  onPrice?: (price: number) => void
+  overlays?: ChartOverlays
+  /** When given, a 📷 button hands back a PNG of the chart with drawings. */
+  onSnapshot?: (png: Blob) => void
 }) {
+  const onPriceRef = useRef(onPrice)
+  onPriceRef.current = onPrice
+  const markersApi = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
+  const priceLines = useRef<IPriceLine[]>([])
+  // Where each tag sits on screen. Re-read every frame while tags exist, so
+  // they follow the line through pans, zooms and price-scale changes.
+  const [tagY, setTagY] = useState<Record<string, number | null>>({})
+  const [scaleWidth, setScaleWidth] = useState(60)
   const host = useRef<HTMLDivElement>(null)
   const paint = useRef<HTMLCanvasElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -85,6 +127,8 @@ export default function DrawableChart({
     })
     chartRef.current = chart
     seriesRef.current = series
+    markersApi.current = createSeriesMarkers(series, [])
+    priceLines.current = []
     setChartApi(chart)
 
     let disposed = false
@@ -102,6 +146,7 @@ export default function DrawableChart({
           })),
         )
         const n = cols.t.length
+        if (n > 0) onPriceRef.current?.(cols.c[n - 1])
         chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 700), to: n + 5 })
         redraw()
       })
@@ -131,6 +176,7 @@ export default function DrawableChart({
             open: parseFloat(k.o), high: parseFloat(k.h),
             low: parseFloat(k.l), close: parseFloat(k.c),
           })
+          onPriceRef.current?.(parseFloat(k.c))
         } catch {
           /* ignore a malformed frame */
         }
@@ -172,12 +218,65 @@ export default function DrawableChart({
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
+      markersApi.current = null
+      priceLines.current = []
       // Tells useChartIndicators its series are gone, so it does not try to
       // remove them from a chart that no longer exists.
       setChartApi(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, timeframe])
+
+  // ── Paper-trading overlays: price lines + fill markers ──────────────
+  useEffect(() => {
+    const series = seriesRef.current
+    if (!series || !chartApi) return
+    for (const l of priceLines.current) series.removePriceLine(l)
+    priceLines.current = (overlays?.lines ?? []).map((l) =>
+      series.createPriceLine({
+        price: l.price,
+        color: l.color,
+        lineWidth: 1,
+        lineStyle: l.dashed ? LineStyle.Dashed : LineStyle.Solid,
+        axisLabelVisible: true,
+        title: l.title,
+      }),
+    )
+    // Markers snap to the candle their fill happened in.
+    const barMs = TF_MS[timeframe] ?? 3_600_000
+    const markers: SeriesMarker<Time>[] = (overlays?.markers ?? [])
+      .map((m) => ({
+        time: (Math.floor(m.timeMillis / barMs) * barMs / 1000) as UTCTimestamp,
+        position: m.side === 'BUY' ? ('belowBar' as const) : ('aboveBar' as const),
+        shape: m.side === 'BUY' ? ('arrowUp' as const) : ('arrowDown' as const),
+        color: '#e8b44c',
+        text: m.text,
+      }))
+      .sort((a, b) => (a.time as number) - (b.time as number))
+    markersApi.current?.setMarkers(markers)
+  }, [overlays, chartApi, timeframe])
+
+  const tags = overlays?.tags
+  useEffect(() => {
+    if (!tags || tags.length === 0 || !chartApi) {
+      setTagY({})
+      return
+    }
+    let raf = 0
+    const tick = () => {
+      const series = seriesRef.current
+      if (series) {
+        const next: Record<string, number | null> = {}
+        for (const t of tags) next[t.id] = series.priceToCoordinate(t.price)
+        setTagY((prev) => (sameY(prev, next) ? prev : next))
+        const w = chartApi.priceScale('right').width()
+        setScaleWidth((prev) => (prev === w ? prev : w))
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [tags, chartApi])
 
   const toData = (x: number, y: number): Point | null => {
     const chart = chartRef.current
@@ -277,6 +376,27 @@ export default function DrawableChart({
     })
   }
 
+  /** The chart plus the drawings layer, flattened into one PNG. */
+  const snapshot = () => {
+    const chart = chartRef.current
+    if (!chart || !onSnapshot) return
+    const base = chart.takeScreenshot()
+    const out = document.createElement('canvas')
+    out.width = base.width
+    out.height = base.height
+    const ctx = out.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(base, 0, 0)
+    // The drawings canvas is in CSS pixels; the screenshot may be in device
+    // pixels. Both cover the same area, so scale one onto the other.
+    if (paint.current) ctx.drawImage(paint.current, 0, 0, out.width, out.height)
+    const scale = out.width / Math.max(1, host.current?.clientWidth ?? out.width)
+    ctx.fillStyle = 'rgba(139,144,154,0.9)'
+    ctx.font = `${Math.round(12 * scale)}px 'IBM Plex Mono', monospace`
+    ctx.fillText(`${symbol} · ${timeframe} · TSB`, 10 * scale, out.height - 10 * scale)
+    out.toBlob((b) => b && onSnapshot(b), 'image/png')
+  }
+
   const clearAll = () => {
     drawings.current = []
     pending.current = null
@@ -304,6 +424,11 @@ export default function DrawableChart({
         {toolBtn('trend', 'Trend')}
         {toolBtn('erase', 'Erase')}
         <button className="ghost" onClick={clearAll}>Clear</button>
+        {onSnapshot && (
+          <button className="ghost" onClick={snapshot} title="Post this chart, with your drawings, to the forum">
+            📷 Snapshot
+          </button>
+        )}
         <span className="note" style={{ marginLeft: 6 }}>
           <span style={{ color: status === 'live' ? 'var(--up)' : 'var(--muted)' }}>●</span>{' '}
           {status}
@@ -336,9 +461,38 @@ export default function DrawableChart({
             style={{ position: 'absolute', inset: 0, cursor: 'crosshair', background: 'transparent' }}
           />
         )}
+        {/* position / order tags — above the drawing layer so ✕ always works */}
+        {tags?.map((t) => {
+          const y = tagY[t.id]
+          const h = host.current?.clientHeight ?? 0
+          if (y == null || y < 8 || y > h - 30) return null
+          return (
+            <div key={t.id} className={`tsb-tag tsb-tag--${t.tone}`} style={{ top: y, right: scaleWidth + 6 }}>
+              <span className="tsb-tag__label">{t.label}</span>
+              {t.pnl && <span className="tsb-tag__pnl">{t.pnl}</span>}
+              <button type="button" className="tsb-tag__x" onClick={t.onAction} title={t.actionTitle} aria-label={t.actionTitle}>
+                ✕
+              </button>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
+}
+
+function sameY(a: Record<string, number | null>, b: Record<string, number | null>): boolean {
+  const ka = Object.keys(a)
+  const kb = Object.keys(b)
+  if (ka.length !== kb.length) return false
+  return kb.every((k) => a[k] != null && b[k] != null ? Math.abs((a[k] as number) - (b[k] as number)) < 0.5 : a[k] === b[k])
+}
+
+const TF_MS: Record<string, number> = {
+  '5m': 300_000,
+  '15m': 900_000,
+  '1h': 3_600_000,
+  '4h': 14_400_000,
 }
 
 function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {

@@ -36,6 +36,14 @@ spring:
     # deployed VM that's a silent data bug; here it cost us a backfill run.
     validate-migration-naming: true
 
+  # ── Uploads (NEW) ───────────────────────────────────────────
+  # Forum pictures. Spring's default is 1 MB per file, which rejects most
+  # phone photos. 5 MB per picture, 4 pictures + text per post.
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 25MB
+
 server:
   port: 8080
   error:
@@ -51,6 +59,7 @@ management:
     health:
       probes:
         enabled: true            # /actuator/health/liveness + /readiness — used later by the VM uptime cron (roadmap §13.2)
+
 tsb:
   auth:
     jwt-secret: auDPxFQ1/3VzyWkUUa7N26ExDRxN/DO2h72n/TpXIw6Ra5Y7LePb7iNgYZmjPkLv
@@ -61,3 +70,10 @@ tsb:
     max-login-attempts: 5
     login-attempt-window: 15m
     allowed-origins: http://localhost:5173
+
+  # ── Admins (NEW) ────────────────────────────────────────────
+  # Usernames (comma-separated) who can create competitions and moderate
+  # the forum, e.g.  admins: dheeraj, saurav, juan
+  # Empty = anyone signed in can create competitions, and nobody can moderate.
+  competition:
+    admins: ""
