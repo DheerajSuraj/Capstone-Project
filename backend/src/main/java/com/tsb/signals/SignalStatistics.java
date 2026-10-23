@@ -213,7 +213,9 @@ public final class SignalStatistics {
                 }
             }
 
+            // As in the engine: ELSE only on a definite false.
             StrategyAst.Action action = root.passed() ? stmt.thenAction()
+                    : root.unknown() ? null
                     : stmt.elseAction().orElse(null);
             if (action != null) {
                 actionBars++;
@@ -267,6 +269,7 @@ public final class SignalStatistics {
             case IGNORED_ALREADY_LONG -> Explanation.Outcome.IGNORED_ALREADY_LONG;
             case IGNORED_NOTHING_TO_SELL -> Explanation.Outcome.IGNORED_NOTHING_TO_SELL;
             case REJECTED_TOO_SMALL -> Explanation.Outcome.REJECTED_TOO_SMALL;
+            case REJECTED_NOT_ENOUGH_CASH -> Explanation.Outcome.REJECTED_NOT_ENOUGH_CASH;
         };
     }
 
@@ -283,7 +286,8 @@ public final class SignalStatistics {
             int applied = outcomes.getOrDefault(Explanation.Outcome.SETTING_APPLIED, 0);
             int ignoredLong = outcomes.getOrDefault(Explanation.Outcome.IGNORED_ALREADY_LONG, 0);
             int ignoredFlat = outcomes.getOrDefault(Explanation.Outcome.IGNORED_NOTHING_TO_SELL, 0);
-            int small = outcomes.getOrDefault(Explanation.Outcome.REJECTED_TOO_SMALL, 0);
+            int small = outcomes.getOrDefault(Explanation.Outcome.REJECTED_TOO_SMALL, 0)
+                    + outcomes.getOrDefault(Explanation.Outcome.REJECTED_NOT_ENOUGH_CASH, 0);
             if (applied > 0) {
                 s.append(String.format(Locale.ROOT, " Applied a setting %,d times.", applied));
             }
@@ -299,7 +303,8 @@ public final class SignalStatistics {
                 }
                 if (small > 0) {
                     s.append(String.format(Locale.ROOT,
-                            ", %,d were too small for the exchange", small));
+                            ", %,d were refused (too small for the exchange, or more "
+                                    + "than the cash available)", small));
                 }
                 s.append('.');
             }

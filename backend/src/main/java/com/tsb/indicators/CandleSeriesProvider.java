@@ -48,4 +48,8 @@ public interface CandleSeriesProvider {
      *             candle"
      */
     CandleSeries load(String symbol, String timeframe, Instant from, Instant to);
+
+    /** The newest {@code limit} closed candles — for anonymous chart
+     *  requests, which don't get the whole history computed for them. */
+    CandleSeries loadLatest(String symbol, String timeframe, int limit);
 }

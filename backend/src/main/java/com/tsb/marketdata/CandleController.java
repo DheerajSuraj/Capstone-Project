@@ -37,9 +37,17 @@ public class CandleController {
     }
 
     public record CandleColumns(
-            long[] t, double[] o, double[] h, double[] l, double[] c, double[] v
+            long[] t, double[] o, double[] h, double[] l, double[] c, double[] v,
+            /** True when the range held more than {@value #MAX_BARS} bars and
+             *  only the newest ones came back — so a chart can say it is
+             *  showing part of the range instead of looking complete. */
+            boolean truncated
     ) {
     }
+
+    /** Postgres's timestamptz runs out long before Java's Instant does. */
+    private static final Instant EARLIEST = Instant.parse("2000-01-01T00:00:00Z");
+    private static final Instant LATEST = Instant.parse("2200-01-01T00:00:00Z");
 
     @GetMapping
     public CandleColumns get(@RequestParam String symbol,
@@ -49,21 +57,42 @@ public class CandleController {
         Symbol sym = symbols.findByTicker(symbol).orElseThrow(() ->
                 new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "unknown symbol " + symbol));
+        if (!Timeframes.SUPPORTED.containsKey(timeframe)) {
+            // Before, an unknown timeframe answered 200 with empty arrays,
+            // which looks exactly like "no data yet".
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "unknown timeframe " + timeframe + " (use one of "
+                            + String.join(", ", Timeframes.SUPPORTED.keySet().stream().sorted().toList())
+                            + ")");
+        }
         Instant fromT;
         Instant toT;
         try {
-            fromT = from == null ? Instant.EPOCH : Instant.parse(from);
+            fromT = from == null ? EARLIEST : Instant.parse(from);
             toT = to == null ? Instant.now() : Instant.parse(to);
         } catch (DateTimeParseException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "from/to must be ISO-8601 instants");
         }
+        if (fromT.isBefore(EARLIEST)) {
+            fromT = EARLIEST;
+        }
+        if (toT.isAfter(LATEST)) {
+            toT = LATEST;
+        }
+        if (!fromT.isBefore(toT)) {
+            return new CandleColumns(new long[0], new double[0], new double[0],
+                    new double[0], new double[0], new double[0], false);
+        }
 
-        CandleSeries s = candles.loadBetween(sym.getId(), timeframe, fromT, toT);
+        // One more than the cap tells us whether the range was cut; the
+        // database applies the limit, so a 5m chart never loads 200,000 rows
+        // to keep 20,000.
+        CandleSeries s = candles.loadLatest(sym.getId(), timeframe, fromT, toT, MAX_BARS + 1);
         int n = s.size();
         if (n <= MAX_BARS) {
             return new CandleColumns(s.openTimeMillis(), s.open(), s.high(),
-                    s.low(), s.close(), s.volume());
+                    s.low(), s.close(), s.volume(), false);
         }
         int start = n - MAX_BARS; // keep the most recent window
         return new CandleColumns(
@@ -72,6 +101,7 @@ public class CandleController {
                 Arrays.copyOfRange(s.high(), start, n),
                 Arrays.copyOfRange(s.low(), start, n),
                 Arrays.copyOfRange(s.close(), start, n),
-                Arrays.copyOfRange(s.volume(), start, n));
+                Arrays.copyOfRange(s.volume(), start, n),
+                true);
     }
 }

@@ -34,7 +34,7 @@ import java.util.List;
 public sealed interface Expr
         permits Expr.NumberLit, Expr.PercentLit, Expr.TimeframeLit,
         Expr.StringLit, Expr.PriceRef, Expr.VarRef, Expr.Call,
-        Expr.Lookback, Expr.Unary, Expr.Binary {
+        Expr.Lookback, Expr.On, Expr.Unary, Expr.Binary {
 
     /** Every expression knows where it came from. */
     Span span();
@@ -90,6 +90,23 @@ public sealed interface Expr
             }
         }
     }
+
+    /**
+     * A bigger timeframe: {@code EMA(CLOSE, 50) ON 4h} is the 50-candle EMA
+     * of 4h candles, read on the strategy's own (smaller) candles.
+     *
+     * <p>The value at a candle is the one from the last 4h candle that had
+     * CLOSED by then — never the 4h candle still forming. That one rule is
+     * what keeps a higher timeframe from leaking the future, and it lives in
+     * the engine's alignment step, not here.
+     *
+     * <p>{@code target} is an indicator call or a price, optionally with its
+     * own lookback, which counts candles of the BIGGER timeframe:
+     * {@code CLOSE[1] ON 1d} is the day-before-yesterday's close. A lookback
+     * written outside, {@code (CLOSE ON 1d)[1]}, counts the strategy's own
+     * candles. The analyzer checks the target's shape.
+     */
+    record On(Expr target, String timeframe, Span span) implements Expr {}
 
     /** {@code -x} or {@code NOT cond}. */
     record Unary(UnaryOp op, Expr operand, Span span) implements Expr {}

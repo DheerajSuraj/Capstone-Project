@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, type CreateCompetitionRequest } from '../api'
-import { when } from './util'
+import { serverNow, when } from './util'
 
 type StartPreset = 'now' | '10m' | '1h' | 'tomorrow' | 'custom'
 
@@ -46,8 +46,15 @@ export default function CreateCompetition({
 
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((x) => ({ ...x, [k]: v }))
 
-  const startsAt = useMemo(() => {
-    const now = Date.now()
+  // "In 10 minutes" means ten minutes from when Create is pressed, not from
+  // when the option was picked: a form left open for a while used to send a
+  // start time already in the past, and the competition began at once.
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 30_000)
+    return () => clearInterval(t)
+  }, [])
+  const startFor = (now: number): Date | null => {
     switch (start) {
       case 'now':
         return new Date(now)
@@ -63,7 +70,8 @@ export default function CreateCompetition({
       case 'custom':
         return custom ? new Date(custom) : null
     }
-  }, [start, custom])
+  }
+  const startsAt = startFor(serverNow())
 
   const endsAt = startsAt ? new Date(startsAt.getTime() + f.durationHours * 3_600_000) : null
 
@@ -71,7 +79,8 @@ export default function CreateCompetition({
     setBusy(true)
     setError(null)
     try {
-      const body: CreateCompetitionRequest = { ...f, startsAt: startsAt ? startsAt.toISOString() : null }
+      const at = startFor(serverNow())
+      const body: CreateCompetitionRequest = { ...f, startsAt: at ? at.toISOString() : null }
       const c = await api.createCompetition(body)
       onDone(c.id)
     } catch (e) {

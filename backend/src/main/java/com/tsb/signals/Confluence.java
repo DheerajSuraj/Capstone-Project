@@ -260,8 +260,8 @@ public final class Confluence {
             return bar -> p.test(bar) ? 1 : 0;
         }
         CompiledStrategy probe = compileProbe(f.tsl(), strategy);
-        Interpreter interp = new Interpreter(probe.lets(), series,
-                IndicatorBank.compute(probe.indicators(), series));
+        Interpreter interp = new Interpreter(probe, series,
+                IndicatorBank.compute(probe, series));
         Expr condition = probe.rules().get(0).body().get(0).condition();
         int warmup = probe.warmupBars();
         return bar -> bar < warmup ? -1 : interp.bool(condition, bar) ? 1 : 0;

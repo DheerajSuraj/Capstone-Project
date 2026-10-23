@@ -60,6 +60,7 @@ public class CompetitionController {
         boolean windowOpen = c.status() == Competition.Status.OPEN
                 && Instant.now().isBefore(c.getStartsAt());
         return new Detail(summary(c, me.getId()), c.getDescription(), service.isAdmin(me),
+                service.canCancel(me, c),
                 windowOpen && mine.size() < c.getMaxEntriesPerUser(),
                 Instant.now().toString(),
                 mine.stream().map(e -> EntryView.of(e, c, me.getUsername(),
@@ -132,7 +133,9 @@ public class CompetitionController {
         List<TraderView> traders = board.traders().stream().map(t -> new TraderView(
                 t.rank(), names.getOrDefault(t.userId(), "?"), t.entries(), t.passed(),
                 t.eliminated(), t.cumulativePnl(),
-                t.cumulativePnl() / c.rules().startingCapital() * 100,
+                // Per entry's worth of starting money: three +12% entries are
+                // +12%, not "+36%" (which outranked a single +20% entry).
+                t.cumulativePnl() / (Math.max(1, t.entries()) * c.rules().startingCapital()) * 100,
                 t.userId() == me.getId())).toList();
         return new Leaderboard(c.status().name(),
                 c.getLastCandle() == null ? null : c.getLastCandle().toString(),
@@ -173,8 +176,11 @@ public class CompetitionController {
                           RulesView rules) {
     }
 
+    /** {@code canCancel}: the creator or a configured admin, while it is
+     *  open or running. */
     public record Detail(Summary competition, String description, boolean isAdmin,
-                         boolean canEnter, String serverTime, List<EntryView> myEntries) {
+                         boolean canCancel, boolean canEnter, String serverTime,
+                         List<EntryView> myEntries) {
     }
 
     public record CreateRequest(
@@ -210,7 +216,10 @@ public class CompetitionController {
             int tradingDays, int minTradingDays,
             boolean halted, String haltReason,
             boolean inTrade, double qty, double entryPrice, int tradeCount,
-            String lastCandle
+            String lastCandle,
+            /** The return if the open position were sold now, after the exit
+             *  fee — what the profit target is finally judged on. */
+            double returnAfterExitFeePct
     ) {
         static EntryView of(CompetitionEntry e, Competition c, String username,
                             String strategy, boolean mine) {
@@ -229,7 +238,14 @@ public class CompetitionController {
                     days, r.minTradingDays(),
                     active && s.haltedToday, active ? s.haltReason : null,
                     s.inTrade(), s.qty, s.entryPrice, s.tradeCount,
-                    s.lastCandle < 0 ? null : Instant.ofEpochMilli(s.lastCandle).toString());
+                    s.lastCandle < 0 ? null : Instant.ofEpochMilli(s.lastCandle).toString(),
+                    afterExitFee(s, r));
+        }
+
+        private static double afterExitFee(EntryState s, RuleSet r) {
+            double positionValue = Math.max(0, s.equity - s.cash);
+            double equity = s.equity - positionValue * r.feeFraction();
+            return (equity / r.startingCapital() - 1) * 100;
         }
     }
 

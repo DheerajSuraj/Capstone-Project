@@ -1,9 +1,13 @@
 package com.tsb.strategy;
 
 import com.tsb.compiler.CompiledStrategy;
+import com.tsb.compiler.Timeframe;
 import com.tsb.execution.BacktestResult;
+import com.tsb.execution.Benchmark;
 import com.tsb.execution.EquityCurves;
 import com.tsb.execution.Metrics;
+import com.tsb.execution.PerformanceMeasures;
+import com.tsb.execution.PeriodReport;
 import com.tsb.execution.Trade;
 import com.tsb.marketdata.CandleSeries;
 import jakarta.validation.constraints.NotBlank;
@@ -17,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
@@ -130,7 +135,25 @@ public class BacktestController {
             MetricsDto metrics,
             List<TradeDto> trades,
             List<EquityCurves.CurvePoint> equityCurve,
-            List<UsedIndicator> indicators
+            List<UsedIndicator> indicators,
+            // What simply buying at the first candle the strategy could
+            // trade, and holding to the end, would have returned — same
+            // fee, same candles. The number every strategy has to beat.
+            Double buyHoldReturnPct,
+            // The fee charged on every fill, as a fraction (0.001 = 0.1%),
+            // so a result always says what it assumed trading costs.
+            double feeRate,
+            // TradAO's measures (yield, drawdown lengths, VaR, volatility,
+            // activeness); Sharpe, Sortino and win rate are above.
+            MeasuresDto measures,
+            // The account over time for the cash-usage chart: net asset
+            // value, cash, the coins' value and buy & hold, on the same
+            // candles as equityCurve plus every candle a trade changed them.
+            List<BookPoint> book,
+            // The run by period, top down: the whole run, years, months,
+            // weeks, days, and by weekday / hour / month of the year. Null
+            // when no candle is left after the warm-up.
+            PeriodReport report
     ) {
         static Result from(BacktestResult r, CompiledStrategy strategy,
                            CandleSeries series) {
@@ -140,6 +163,16 @@ public class BacktestController {
             Metrics metrics = Metrics.compute(r.equityCurve(),
                     r.warmupBars(), r.trades(),
                     Metrics.barsPerYear(strategy.timeframe()));
+            long barMs = Timeframe.millis(strategy.timeframe()).orElse(3_600_000L);
+            PerformanceMeasures measures = PerformanceMeasures.compute(
+                    series.openTimeMillis(), r.equityCurve(), r.positionCurve(),
+                    r.warmupBars(), r.trades(), barMs);
+            double[] hold = Benchmark.curve(series, r.warmupBars(), r.initialCapital(),
+                    strategy.feePercent());
+            // Also on the full-resolution curve: every day, every hour.
+            PeriodReport report = PeriodReport.build(series.openTimeMillis(),
+                    r.equityCurve(), r.positionCurve(), r.warmupBars(), r.trades(),
+                    strategy.feePercent(), hold, barMs, r.initialCapital());
             return new Result(
                     strategy.name(), strategy.symbol(), strategy.timeframe(),
                     r.initialCapital(), r.finalEquity(), r.totalReturnPct(),
@@ -158,7 +191,98 @@ public class BacktestController {
                     strategy.indicators().stream()
                             .map(UsedIndicator::from)
                             .sorted(Comparator.comparing(UsedIndicator::key))
-                            .toList());
+                            .toList(),
+                    buyHoldReturnPct(series, r.warmupBars(), strategy.feePercent()),
+                    strategy.feePercent(),
+                    MeasuresDto.from(measures),
+                    bookCurve(series, r, hold),
+                    report);
+        }
+
+        /**
+         * Buy at the open after the first bar a rule can run on (exactly
+         * when a "BUY ALL" on that bar would fill), sell at the last close,
+         * paying the fee both ways. Null when there is no such bar.
+         */
+        static Double buyHoldReturnPct(CandleSeries series, int warmupBars, double fee) {
+            return Benchmark.returnPct(series, warmupBars, fee);
+        }
+    }
+
+    /** One point of the account over time (see {@link Result#book}). */
+    public record BookPoint(long t, double equity, double cash, double positionValue,
+                            Double benchmark) {
+    }
+
+    /** Most candles kept just because a trade happened on them. */
+    private static final int MAX_TRADE_POINTS = 3_000;
+
+    /**
+     * The same strided candles as the equity curve — and, because cash only
+     * moves when a trade fills, the candle of every fill and the one before
+     * it, so the cash line steps exactly where the trades were instead of
+     * somewhere between two samples. (A very active strategy keeps only the
+     * strided candles.)
+     */
+    static List<BookPoint> bookCurve(CandleSeries series, BacktestResult r, double[] hold) {
+        int n = series.size();
+        if (n == 0) {
+            return List.of();
+        }
+        int stride = Math.max(1, (int) Math.ceil((double) n / MAX_CURVE_POINTS));
+        boolean[] keep = new boolean[n];
+        for (int i = 0; i < n; i += stride) {
+            keep[i] = true;
+        }
+        keep[n - 1] = true;
+        double[] cash = r.cashCurve();
+        int changes = 0;
+        for (int i = 1; i < n; i++) {
+            if (cash[i] != cash[i - 1]) {
+                changes++;
+            }
+        }
+        if (changes * 2 <= MAX_TRADE_POINTS) {
+            for (int i = 1; i < n; i++) {
+                if (cash[i] != cash[i - 1]) {
+                    keep[i - 1] = true;
+                    keep[i] = true;
+                }
+            }
+        }
+        long[] t = series.openTimeMillis();
+        double[] close = series.close();
+        List<BookPoint> out = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            if (keep[i]) {
+                out.add(new BookPoint(t[i], r.equityCurve()[i], cash[i],
+                        r.positionCurve()[i] * close[i], hold == null ? null : hold[i]));
+            }
+        }
+        return out;
+    }
+
+    /** TradAO's measures; non-finite values become null (see MetricsDto). */
+    public record MeasuresDto(
+            Double yieldPct,
+            Double maxDrawdownPct,
+            Double maxDrawdownDays,
+            Double avgDrawdownDays,
+            Double var99Pct,
+            Double volatilityPct,
+            Double tradesPer30Days,
+            Double timeInMarketPct,
+            int days
+    ) {
+        static MeasuresDto from(PerformanceMeasures m) {
+            return new MeasuresDto(f(m.yieldPct()), f(m.maxDrawdownPct()),
+                    f(m.maxDrawdownDays()), f(m.avgDrawdownDays()), f(m.var99Pct()),
+                    f(m.volatilityPct()), f(m.tradesPer30Days()), f(m.timeInMarketPct()),
+                    m.days());
+        }
+
+        private static Double f(double v) {
+            return Double.isFinite(v) ? v : null;
         }
     }
 
@@ -180,14 +304,20 @@ public class BacktestController {
             String source,
             List<Double> args,
             /** The engine's own cache key, e.g. {@code SMA(CLOSE,200)}. */
-            String key
+            String key,
+            /** Null on the strategy's own candles; "4h" for {@code ... ON 4h}. */
+            String timeframe,
+            /** Lookback in those bigger candles ({@code CLOSE[1] ON 1d} = 1). */
+            int offset
     ) {
         static UsedIndicator from(CompiledStrategy.IndicatorInstance i) {
             return new UsedIndicator(
                     i.name(),
                     i.source() == null ? null : i.source().name(),
                     i.constArgs(),
-                    i.key());
+                    i.key(),
+                    i.timeframe(),
+                    i.offset());
         }
     }
 

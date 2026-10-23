@@ -10,27 +10,41 @@ import { api, type PaperAccountDto } from '../api'
  * for the next poll.
  */
 export function usePaperAccount(enabled: boolean) {
-  const [account, setAccount] = useState<PaperAccountDto | null>(null)
+  const [account, setAccountState] = useState<PaperAccountDto | null>(null)
   const [error, setError] = useState<string | null>(null)
   const alive = useRef(true)
+  // Every new account (a poll, or what a click returned) gets a number. A
+  // poll that set off before a click but answered after it carries an older
+  // number and is dropped — before, it put the old balance back on screen.
+  const version = useRef(0)
+
+  const setAccount = useCallback((a: PaperAccountDto) => {
+    version.current++
+    setAccountState(a)
+  }, [])
 
   const refresh = useCallback(async () => {
     if (!enabled) return
+    const mine = ++version.current
     try {
       const a = await api.paperAccount()
-      if (alive.current) {
-        setAccount(a)
+      if (alive.current && mine === version.current) {
+        setAccountState(a)
         setError(null)
       }
     } catch (e) {
-      if (alive.current) setError(e instanceof Error ? e.message : String(e))
+      if (alive.current && mine === version.current) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
     }
   }, [enabled])
 
   useEffect(() => {
     alive.current = true
     if (!enabled) {
-      setAccount(null)
+      version.current++
+      setAccountState(null)
+      setError(null)
       return
     }
     refresh()

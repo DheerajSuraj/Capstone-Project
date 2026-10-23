@@ -135,8 +135,8 @@ export default function ChooseUsername() {
         </form>
 
         <p className="tsb-auth__legal">
-          You can change this later in Settings, but not while you have a
-          strategy entered in a running competition.
+          This is the name other traders see on leaderboards and in the
+          forum. Choose carefully: it can't be changed later.
         </p>
       </div>
     </div>

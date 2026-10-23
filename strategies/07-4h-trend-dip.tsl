@@ -1,0 +1,26 @@
+// 4h Trend Dip Buyer: on 1h candles, buy short dips (RSI under 35) only
+// while the 4h trend points up: price above the 4h 50 EMA, and that EMA
+// higher than on the 4h candle before. "ON 4h" reads the 4h chart, and only
+// 4h candles that have finished count, never the one still forming.
+strategy "4h Trend Dip Buyer" {
+    symbol = BTCUSDT
+    timeframe = 1h
+    capital = 10000
+    fee = 0.1%
+
+    let trend = EMA(CLOSE, 50) ON 4h
+    let trendBefore = EMA(CLOSE, 50)[1] ON 4h
+    let rsi = RSI(14)
+
+    rule entry {
+        IF rsi < 35 AND CLOSE > trend AND trend > trendBefore THEN BUY ALL
+    }
+
+    rule exit {
+        IF rsi > 60 OR CLOSE < trend THEN SELL ALL
+    }
+
+    rule protect {
+        IF CLOSE > 0 THEN SET STOPLOSS = 3%
+    }
+}

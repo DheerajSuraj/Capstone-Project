@@ -19,11 +19,14 @@ import java.util.List;
  *       signals. Signal on close, fill at NEXT open: decisions use only
  *       closed-bar information, transactions happen at the next price that
  *       actually existed. (No-look-ahead, final layer.)</li>
- *   <li><b>Protective exits intrabar</b> — long stop fires if low[i] <=
- *       stop level, FILLED AT THE LEVEL (not the low: we do not award
- *       ourselves the best price of the bar). Take-profit mirrors on
- *       high[i]. Both in one bar -> the STOP wins: when intrabar ordering
- *       is unknowable, assume the worse outcome.</li>
+ *   <li><b>Protective exits intrabar</b> ({@link ProtectiveExits}) — a long
+ *       stop fires if low[i] <= stop level and fills AT THE LEVEL (not the
+ *       low: we do not award ourselves the best price of the bar) — unless
+ *       the bar OPENED below it, in which case it fills at the open, the
+ *       first price that existed. Take-profit mirrors on high[i]. Both
+ *       reachable in one bar -> the STOP wins: when intrabar ordering is
+ *       unknowable, assume the worse outcome. For the same reason a
+ *       trailing stop trails the highs of EARLIER bars only.</li>
  *   <li><b>Evaluate rules at close[i]</b> — THEN on true, ELSE on false;
  *       BUY/SELL become pending orders for i+1; SET configures protective
  *       exits immediately.</li>
@@ -77,14 +80,16 @@ public final class Backtester {
                               int earliestTradeBar) {
         int n = series.size();
         double[] equity = new double[n];
+        double[] cashAt = new double[n];
+        double[] held = new double[n];
         List<Trade> trades = new ArrayList<>();
         if (n == 0) {
             return new BacktestResult(strategy.capital(), strategy.capital(),
-                    equity, trades, strategy.warmupBars(), 0, 0);
+                    equity, trades, strategy.warmupBars(), 0, 0, cashAt, held);
         }
 
-        Interpreter interp = new Interpreter(strategy.lets(), series,
-                IndicatorBank.compute(strategy.indicators(), series));
+        Interpreter interp = new Interpreter(strategy, series,
+                IndicatorBank.compute(strategy, series));
         double fee = strategy.feePercent();
 
         // ── Portfolio state ─────────────────────────────────────────────
@@ -128,6 +133,11 @@ public final class Backtester {
                                 BarObserver.FillOutcome.REJECTED_TOO_SMALL);
                         continue; // unplaceable on a real exchange -> no fill
                     }
+                    if (!Sizing.affordable(rounded, cash, open, fee)) {
+                        report(observer, order, i,
+                                BarObserver.FillOutcome.REJECTED_NOT_ENOUGH_CASH);
+                        continue; // a spot account can't buy on credit
+                    }
                     double notional = rounded * open;
                     double feePaid = notional * fee;
                     cash -= notional + feePaid;
@@ -135,7 +145,9 @@ public final class Backtester {
                     entryPrice = open;
                     entryBar = i;
                     entryFees = feePaid;
-                    peakSinceEntry = high;
+                    // The peak starts at the entry price. This candle's high
+                    // only counts after the stops are checked (see step 2).
+                    peakSinceEntry = open;
                     report(observer, order, i, BarObserver.FillOutcome.FILLED);
                 } else if (order instanceof Pending.Sell s) {
                     if (qty <= 0) {
@@ -143,8 +155,7 @@ public final class Backtester {
                                 BarObserver.FillOutcome.IGNORED_NOTHING_TO_SELL);
                         continue; // nothing to sell
                     }
-                    double sellQty = Math.min(qty,
-                            rules.roundQty(Sizing.desiredSellQty(s.sizing(), qty)));
+                    double sellQty = sellSize(s.sizing(), qty, cash, open, rules);
                     if (sellQty <= 0) {
                         report(observer, order, i,
                                 BarObserver.FillOutcome.REJECTED_TOO_SMALL);
@@ -175,39 +186,23 @@ public final class Backtester {
             pending.clear();
 
             // ── 2. Protective exits, checked intrabar ───────────────────
+            // The honest-fill rules (gaps fill at the open, falling side
+            // first, trailing from earlier candles only) live in ONE place,
+            // shared with the competition engine.
             if (qty > 0) {
-                peakSinceEntry = Math.max(peakSinceEntry, high);
-                Double exitLevel = null;
-                Trade.ExitReason reason = null;
-
-                if (stopPct > 0) {
-                    double level = entryPrice * (1 - stopPct / 100.0);
-                    if (low <= level) {
-                        exitLevel = level;
-                        reason = Trade.ExitReason.STOPLOSS;
-                    }
-                }
-                if (exitLevel == null && trailingPct > 0) {
-                    double level = peakSinceEntry * (1 - trailingPct / 100.0);
-                    if (low <= level) {
-                        exitLevel = level;
-                        reason = Trade.ExitReason.TRAILING;
-                    }
-                }
-                if (exitLevel == null && takeProfitPct > 0) {
-                    double level = entryPrice * (1 + takeProfitPct / 100.0);
-                    if (high >= level) {
-                        exitLevel = level;
-                        reason = Trade.ExitReason.TAKEPROFIT;
-                    }
-                }
-
-                if (exitLevel != null) {
-                    cash += Sizing.exitProceeds(qty, exitLevel, fee);
+                ProtectiveExits.Exit exit = ProtectiveExits.check(entryPrice,
+                        peakSinceEntry, stopPct, trailingPct, takeProfitPct,
+                        open, high, low);
+                if (exit != null) {
+                    cash += Sizing.exitProceeds(qty, exit.price(), fee);
                     trades.add(makeTrade(series, entryBar, i, qty, entryPrice,
-                            exitLevel, entryFees, fee, reason));
+                            exit.price(), entryFees, fee, exit.reason()));
                     qty = 0;
                     stopPct = takeProfitPct = trailingPct = 0;
+                } else {
+                    // Only now does this candle's high count: it raises the
+                    // trailing level for the NEXT candle.
+                    peakSinceEntry = Math.max(peakSinceEntry, high);
                 }
             }
 
@@ -218,9 +213,16 @@ public final class Backtester {
                 List<StrategyAst.IfStmt> body = ruleList.get(r).body();
                 for (int k = 0; k < body.size(); k++) {
                     StrategyAst.IfStmt stmt = body.get(k);
-                    StrategyAst.Action action = interp.bool(stmt.condition(), i)
+                    // THEN on a definite true, ELSE on a definite false. No
+                    // answer (missing data) runs neither: ELSE means "the
+                    // condition was false", not "it was not true" — or an
+                    // ELSE BUY would trade on data that is not there.
+                    byte answer = interp.tri(stmt.condition(), i);
+                    StrategyAst.Action action = answer == Interpreter.TRUE
                             ? stmt.thenAction()
-                            : stmt.elseAction().orElse(null);
+                            : answer == Interpreter.FALSE
+                                    ? stmt.elseAction().orElse(null)
+                                    : null;
                     if (action == null) {
                         continue;
                     }
@@ -240,13 +242,17 @@ public final class Backtester {
                     }
                 }
             }
+            observer.onLevels(i, stopPct, takeProfitPct, trailingPct, peakSinceEntry);
 
             equity[i] = cash + qty * close;
+            cashAt[i] = cash;
+            held[i] = qty;
         }
 
         // Bars before firstBar hold flat capital, for an honest curve.
         for (int i = 0; i < firstBar && i < n; i++) {
             equity[i] = strategy.capital();
+            cashAt[i] = strategy.capital();
         }
 
         // ── End of data: close any open position at the last close ──────
@@ -258,11 +264,45 @@ public final class Backtester {
                     lastClose, entryFees, fee, Trade.ExitReason.END_OF_DATA));
             finalEquity = cash;
             equity[n - 1] = cash;
+            cashAt[n - 1] = cash;
+            held[n - 1] = 0;
         }
 
         return new BacktestResult(strategy.capital(), finalEquity, equity,
                 trades, strategy.warmupBars(), Math.max(0, n - firstBar),
-                maxDrawdownPct(equity, firstBar));
+                maxDrawdownPct(equity, firstBar), cashAt, held);
+    }
+
+    /**
+     * How much a SELL actually sells, or 0 when the exchange would refuse it.
+     * Shared with the competition engine so both sell the same amount.
+     *
+     * <ul>
+     *   <li>{@code SELL ALL} sells exactly what is held, never a rounded-down
+     *       amount that leaves a sliver behind;</li>
+     *   <li>a partial sell that would leave less than one quantity step
+     *       sells everything instead — a sliver that small could never be
+     *       sold later, and it blocked every BUY after it ("already long");</li>
+     *   <li>a partial sell below the exchange's minimum order value is
+     *       refused, as the exchange would. Closing the whole position is
+     *       always allowed, so a position can never get stuck.</li>
+     * </ul>
+     */
+    public static double sellSize(StrategyAst.Sizing sizing, double held, double cash,
+                                  double price, ExchangeRules rules) {
+        if (sizing instanceof StrategyAst.Sizing.All) {
+            return held;
+        }
+        double wanted = Sizing.desiredSellQty(sizing, held, cash + held * price, price);
+        double sellQty = Math.min(held, rules.roundQty(wanted));
+        if (sellQty <= 0) {
+            return 0;
+        }
+        double rest = held - sellQty;
+        if (rest <= 1e-12 * Math.max(1, held) || rules.roundQty(rest) <= 0) {
+            return held; // close fully: no unsellable dust left behind
+        }
+        return rules.meetsMinNotional(sellQty, price) ? sellQty : 0;
     }
 
     private static void report(BarObserver observer, Pending order, int fillBar,

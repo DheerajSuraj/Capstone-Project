@@ -1,0 +1,23 @@
+// Bollinger Bounce: when the market is going sideways (ADX below 25), buy
+// a close under the lower band and sell when price gets back to the middle.
+strategy "Bollinger Bounce" {
+    symbol = BTCUSDT
+    timeframe = 1h
+    capital = 10000
+    fee = 0.1%
+
+    let lowerBand = BB_LOWER(CLOSE, 20, 2)
+    let middle = SMA(CLOSE, 20)
+
+    rule entry {
+        IF CLOSE < lowerBand AND ADX(14) < 25 THEN BUY ALL
+    }
+
+    rule exit {
+        IF CLOSE > middle THEN SELL ALL
+    }
+
+    rule protect {
+        IF CLOSE > 0 THEN SET STOPLOSS = 3%
+    }
+}

@@ -58,6 +58,10 @@ export type ApiErrorCode =
   | 'PENDING_EXPIRED'
   | 'GOOGLE_REJECTED'
   | 'UNAUTHENTICATED'
+  | 'VALIDATION'
+  | 'BAD_REQUEST'
+  | 'PAYLOAD_TOO_LARGE'
+  | 'SERVER_ERROR'
   | 'NETWORK'
   | 'UNKNOWN';
 
@@ -116,7 +120,22 @@ async function parseError(res: Response): Promise<ApiError> {
   }
 
   if (code === 'UNKNOWN' && res.status === 401) code = 'UNAUTHENTICATED';
+  if (retryAfterSeconds === undefined) {
+    // The general rate limiter says when in the Retry-After header.
+    const header = Number(res.headers.get('Retry-After'));
+    if (Number.isFinite(header) && header > 0) retryAfterSeconds = header;
+  }
   return new ApiError(code, message, res.status, retryAfterSeconds);
+}
+
+/**
+ * The sign-in endpoints never need the access token — and an expired one
+ * sent along made them answer 401 before they looked at anything, which is
+ * how a refresh after a long break turned into "your session has expired".
+ * Only /auth/me is about the signed-in user.
+ */
+function needsAccessToken(path: string): boolean {
+  return !path.startsWith('/auth/') || path === '/auth/me';
 }
 
 type RequestOptions = {
@@ -132,7 +151,7 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
 
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+  if (accessToken && needsAccessToken(path)) headers['Authorization'] = `Bearer ${accessToken}`;
 
   let res: Response;
   try {
@@ -149,9 +168,9 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   }
 
   // Access token expired — spend the refresh cookie once, then replay.
-  if (res.status === 401 && retryOn401 && accessToken) {
+  if (res.status === 401 && retryOn401 && accessToken && needsAccessToken(path)) {
     try {
-      await refresh();
+      await refreshShared();
     } catch {
       setAccessToken(null);
       throw new ApiError('UNAUTHENTICATED', 'Your session has expired.', 401);
@@ -234,6 +253,38 @@ export async function refresh(): Promise<AuthSuccess> {
   return r;
 }
 
+let refreshInFlight: Promise<AuthSuccess> | null = null;
+
+/**
+ * The one way to refresh. Refresh tokens are single use: two refreshes
+ * with the same cookie look like a stolen token to the server. So every
+ * caller in this tab shares one request, and other tabs wait their turn
+ * (Web Locks), each then refreshing with the cookie the one before left.
+ * Browsers without Web Locks still get the in-tab sharing.
+ */
+export function refreshShared(): Promise<AuthSuccess> {
+  if (!refreshInFlight) {
+    const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+    const once = () =>
+      locks
+        ? (locks.request('tsb-auth-refresh', () => refresh()) as Promise<AuthSuccess>)
+        : refresh();
+    // A refresh refused as "just spent" usually means another tab refreshed
+    // a moment earlier with the same cookie — and the browser now holds the
+    // new one. One retry, after a breath, picks it up; a session that has
+    // really ended is refused again and stays ended.
+    const run = once().catch(async (e: unknown) => {
+      if (!(e instanceof ApiError) || e.code !== 'UNAUTHENTICATED') throw e;
+      await new Promise((r) => setTimeout(r, 400));
+      return once();
+    });
+    refreshInFlight = run.finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
 export async function signOut(): Promise<void> {
   try {
     await request<void>('/auth/logout', { method: 'POST', retryOn401: false });
@@ -279,6 +330,14 @@ export function validateUsername(u: string): string | null {
 }
 
 export const MIN_PASSWORD_LENGTH = 10;
+
+/** bcrypt reads only the first 72 bytes of a password; the server refuses
+ *  longer ones rather than silently ignoring the rest. */
+export const MAX_PASSWORD_BYTES = 72;
+
+export function passwordTooLong(pw: string): boolean {
+  return new TextEncoder().encode(pw).length > MAX_PASSWORD_BYTES;
+}
 
 /**
  * Length first, because that is what actually resists guessing. No

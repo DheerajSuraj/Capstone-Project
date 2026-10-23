@@ -58,6 +58,7 @@ public enum TokenType {
     STOPLOSS,
     TAKEPROFIT,
     TRAILING,
+    ON,             // ON 4h — read an indicator on a bigger timeframe
 
     // ── Price references (closed set; typed as Series) ──────────────────
     OPEN,
@@ -127,6 +128,7 @@ public enum TokenType {
             Map.entry("STOPLOSS", STOPLOSS),
             Map.entry("TAKEPROFIT", TAKEPROFIT),
             Map.entry("TRAILING", TRAILING),
+            Map.entry("ON", ON),
             Map.entry("OPEN", OPEN),
             Map.entry("HIGH", HIGH),
             Map.entry("LOW", LOW),

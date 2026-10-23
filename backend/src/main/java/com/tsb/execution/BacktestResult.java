@@ -10,6 +10,9 @@ import java.util.List;
  *
  * @param equityCurve equity at every bar close, length = series size
  * @param maxDrawdownPct worst peak-to-trough on the equity curve, percent
+ * @param cashCurve     cash at every bar close (what is not in the coin) —
+ *                      the "available cash" line of a cash-usage view
+ * @param positionCurve coins held at every bar close (the inventory)
  */
 public record BacktestResult(
         double initialCapital,
@@ -18,7 +21,9 @@ public record BacktestResult(
         List<Trade> trades,
         int warmupBars,
         int barsProcessed,
-        double maxDrawdownPct
+        double maxDrawdownPct,
+        double[] cashCurve,
+        double[] positionCurve
 ) {
 
     public double totalReturnPct() {

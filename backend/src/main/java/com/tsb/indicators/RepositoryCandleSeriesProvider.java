@@ -56,4 +56,13 @@ public class RepositoryCandleSeriesProvider implements CandleSeriesProvider {
                 from == null ? Instant.EPOCH : from,
                 to == null ? Instant.now() : to);
     }
+
+    @Override
+    public CandleSeries loadLatest(String symbol, String timeframe, int limit) {
+        long symbolId = symbols.findByTicker(symbol)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No data for symbol '" + symbol + "'."))
+                .getId();
+        return candles.loadLatest(symbolId, timeframe, Instant.EPOCH, Instant.now(), limit);
+    }
 }

@@ -141,7 +141,7 @@ export default function LiveChart({
       <div
         ref={ref}
         style={{
-          height: 320,
+          height,
           border: '1px solid #2a2f38',
           borderRadius: 6,
           overflow: 'hidden',

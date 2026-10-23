@@ -122,7 +122,7 @@ const defs: object[] = [
     ],
     output: 'Action',
     colour: 60,
-    tooltip: 'Protective exit, percent from entry (trailing: from the peak).',
+    tooltip: 'Protective exit, percent from entry (trailing: from the highest price of earlier candles). If a candle opens past the level, it fills at that open.',
   },
 
   // ── Logic & comparison ──
@@ -237,6 +237,32 @@ const defs: object[] = [
     colour: 230,
     inputsInline: true,
     tooltip: 'The value K bars back. Only backwards — the language has no way to look forward.',
+  },
+  {
+    type: 'tsl_on',
+    message0: '%1 on the %2 chart',
+    args0: [
+      { type: 'input_value', name: 'TARGET', check: 'Number' },
+      {
+        type: 'field_dropdown',
+        name: 'TF',
+        options: [
+          ['4h', '4h'],
+          ['1d', '1d'],
+          ['1w', '1w'],
+          ['12h', '12h'],
+          ['1h', '1h'],
+          ['15m', '15m'],
+        ],
+      },
+    ],
+    output: 'Number',
+    colour: 230,
+    inputsInline: true,
+    tooltip:
+      'An indicator or price on bigger candles, e.g. the 4h trend on a 1h strategy. ' +
+      'Only finished bigger candles count, never the one still forming. ' +
+      "Must be bigger than the strategy's own timeframe.",
   },
   {
     type: 'tsl_minmax',
@@ -377,6 +403,7 @@ export const toolbox = {
         { kind: 'block', type: 'tsl_number' },
         { kind: 'block', type: 'tsl_arith' },
         { kind: 'block', type: 'tsl_lookback' },
+        { kind: 'block', type: 'tsl_on' },
         { kind: 'block', type: 'tsl_minmax' },
         { kind: 'block', type: 'tsl_abs' },
       ],

@@ -158,7 +158,18 @@ export default function Compose({
             ))}
             {images.length < MAX_IMAGES && (
               <label className="tsb-f__add-img">
-                <input type="file" accept="image/png,image/jpeg" multiple hidden onChange={(e) => e.target.files && add(e.target.files)} />
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    if (e.target.files) add(e.target.files)
+                    // Cleared, so choosing the same file again (after
+                    // removing it) is a change the input reports.
+                    e.target.value = ''
+                  }}
+                />
                 + Add pictures
                 <span className="tsb-f__muted tsb-f__small">or drop them here · PNG/JPEG, 5 MB</span>
               </label>

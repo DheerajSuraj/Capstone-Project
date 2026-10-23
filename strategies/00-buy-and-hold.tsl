@@ -1,0 +1,13 @@
+// Buy and Hold: buys on the first candle and never sells. This is the
+// benchmark. A strategy is only "good" if it beats this, or matches it with
+// much smaller drops along the way.
+strategy "Buy and Hold" {
+    symbol = BTCUSDT
+    timeframe = 4h
+    capital = 10000
+    fee = 0.1%
+
+    rule entry {
+        IF CLOSE > 0 THEN BUY ALL
+    }
+}

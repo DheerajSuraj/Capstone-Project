@@ -56,6 +56,7 @@ export default function DrawableChart({
   timeframe,
   height,
   onPrice,
+  onStale,
   overlays,
   onSnapshot,
 }: {
@@ -64,12 +65,16 @@ export default function DrawableChart({
   height: number | string
   /** Every live tick's last price, for the order ticket. */
   onPrice?: (price: number) => void
+  /** The live feed dropped or went silent; its last price is out of date. */
+  onStale?: () => void
   overlays?: ChartOverlays
   /** When given, a 📷 button hands back a PNG of the chart with drawings. */
   onSnapshot?: (png: Blob) => void
 }) {
   const onPriceRef = useRef(onPrice)
   onPriceRef.current = onPrice
+  const onStaleRef = useRef(onStale)
+  onStaleRef.current = onStale
   const markersApi = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const priceLines = useRef<IPriceLine[]>([])
   // Where each tag sits on screen. Re-read every frame while tags exist, so
@@ -146,7 +151,9 @@ export default function DrawableChart({
           })),
         )
         const n = cols.t.length
-        if (n > 0) onPriceRef.current?.(cols.c[n - 1])
+        // The last stored close is not a live price (it can be a whole
+        // candle old), so it is not reported as one: until the live feed
+        // ticks, the order ticket shows the server's own price, labelled so.
         chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 700), to: n + 5 })
         redraw()
       })
@@ -158,17 +165,29 @@ export default function DrawableChart({
     // Only the surviving mount reaches here. This is what stops the
     // open/close churn ("ping received after close" / "closed before
     // established").
-    const openTimer = setTimeout(() => {
+    //
+    // The feed can drop (Wi-Fi, a sleeping laptop, Binance closing streams
+    // after 24 hours) or go quiet without closing. Either way the last
+    // price stops being true, so: tell the page (onStale), and reconnect,
+    // waiting a little longer after each failure (1 s, 2 s, 4 s … 30 s).
+    let retries = 0
+    let lastTick = 0
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+    const connect = () => {
       if (disposed) return
       const s = new WebSocket(
         `wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${timeframe}`,
       )
       socket = s
       s.onopen = () => {
-        if (!disposed) setStatus('live')
+        if (disposed) return
+        retries = 0
+        lastTick = Date.now()
+        setStatus('live')
       }
       s.onmessage = (ev) => {
         if (disposed) return
+        lastTick = Date.now()
         try {
           const k = JSON.parse(ev.data).k
           seriesRef.current?.update({
@@ -184,7 +203,23 @@ export default function DrawableChart({
       s.onerror = () => {
         if (!disposed) setStatus('offline — history only, drawings still work')
       }
-    }, 0)
+      s.onclose = () => {
+        if (disposed) return
+        socket = null
+        onStaleRef.current?.()
+        setStatus('live feed lost — reconnecting…')
+        const wait = Math.min(30_000, 1000 * 2 ** retries)
+        retries++
+        reconnectTimer = setTimeout(connect, wait)
+      }
+    }
+    const openTimer = setTimeout(connect, 0)
+    // Binance pushes a kline update every couple of seconds; half a minute
+    // of silence means the connection is dead even if it never said so.
+    const watchdog = setInterval(() => {
+      if (disposed || !socket || socket.readyState !== WebSocket.OPEN) return
+      if (Date.now() - lastTick > 30_000) socket.close() // onclose reconnects
+    }, 5_000)
 
     chart.timeScale().subscribeVisibleLogicalRangeChange(() => redraw())
 
@@ -203,6 +238,8 @@ export default function DrawableChart({
     return () => {
       disposed = true
       clearTimeout(openTimer)
+      clearTimeout(reconnectTimer)
+      clearInterval(watchdog)
       obs.disconnect()
       if (socket) {
         // detach handlers BEFORE closing so a late ping/close can't fire

@@ -14,6 +14,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Iterator;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Every uploaded picture passes through here before it is stored.
@@ -32,14 +34,24 @@ import java.util.Iterator;
  *       appended after the image data.</li>
  * </ol>
  * Large pictures are scaled down to {@value #MAX_SIDE_OUT} px on the long side
- * on the way.
+ * on the way, and turned the right way up: phones store photos sideways and
+ * say so in EXIF, which step 3 throws away, so the turn is applied first.
+ *
+ * <p><b>Memory.</b> A decoded picture takes 3–4 bytes per pixel whatever
+ * its file size, so at most {@value #MAX_PIXELS_IN} pixels (16 MP, 64 MB
+ * decoded) and at most {@value #MAX_DECODES} pictures decode at once —
+ * before, a few posts of four 40 MP files at the same time could take
+ * gigabytes and stop the whole server.
  */
 public final class ImageSanitizer {
 
     public static final int MAX_BYTES = 5 * 1024 * 1024;
     static final int MAX_SIDE_IN = 8000;
-    static final long MAX_PIXELS_IN = 40_000_000L;
+    static final long MAX_PIXELS_IN = 16_000_000L;
     static final int MAX_SIDE_OUT = 2000;
+    static final int MAX_DECODES = 2;
+
+    private static final Semaphore DECODING = new Semaphore(MAX_DECODES, true);
 
     /** A clean image, ready to store and serve. */
     public record Clean(byte[] bytes, String contentType, int width, int height) {
@@ -59,7 +71,23 @@ public final class ImageSanitizer {
         if (format == null) {
             throw new IllegalArgumentException("Only PNG or JPEG images can be uploaded.");
         }
+        try {
+            if (!DECODING.tryAcquire(20, TimeUnit.SECONDS)) {
+                throw new IllegalArgumentException("Lots of pictures are being uploaded "
+                        + "right now. Please try again in a moment.");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalArgumentException("The upload was interrupted.");
+        }
+        try {
+            return decodeAndRedraw(input, format);
+        } finally {
+            DECODING.release();
+        }
+    }
 
+    private static Clean decodeAndRedraw(byte[] input, String format) {
         BufferedImage image;
         try (ImageInputStream in = ImageIO.createImageInputStream(new ByteArrayInputStream(input))) {
             Iterator<ImageReader> readers = ImageIO.getImageReadersByFormatName(format);
@@ -74,7 +102,8 @@ public final class ImageSanitizer {
                 if (w <= 0 || h <= 0 || w > MAX_SIDE_IN || h > MAX_SIDE_IN
                         || (long) w * h > MAX_PIXELS_IN) {
                     throw new IllegalArgumentException("Images can be at most "
-                            + MAX_SIDE_IN + " pixels on each side.");
+                            + MAX_SIDE_IN + " pixels on a side and 16 megapixels in all "
+                            + "(for example 4000 × 4000). This one is " + w + " × " + h + ".");
                 }
                 image = reader.read(0);
             } finally {
@@ -88,9 +117,117 @@ public final class ImageSanitizer {
         }
 
         BufferedImage out = scaleDown(image, format.equals("png"));
+        if (format.equals("jpeg")) {
+            out = orient(out, exifOrientation(input));
+        }
         byte[] bytes = format.equals("png") ? writePng(out) : writeJpeg(out);
         return new Clean(bytes, format.equals("png") ? "image/png" : "image/jpeg",
                 out.getWidth(), out.getHeight());
+    }
+
+    /**
+     * The EXIF orientation of a JPEG (1 = upright … 8), read straight from
+     * its APP1 segment; 1 when there is none or it is malformed. Only this
+     * one number is taken from the metadata — everything else is dropped.
+     */
+    static int exifOrientation(byte[] b) {
+        int i = 2; // after SOI
+        while (i + 4 <= b.length && (b[i] & 0xFF) == 0xFF) {
+            int marker = b[i + 1] & 0xFF;
+            if (marker == 0xDA || marker == 0xD9) {
+                return 1; // image data starts: no EXIF before it
+            }
+            int len = ((b[i + 2] & 0xFF) << 8) | (b[i + 3] & 0xFF);
+            if (len < 2 || i + 2 + len > b.length) {
+                return 1;
+            }
+            int seg = i + 4; // segment payload
+            if (marker == 0xE1 && len >= 8 && b[seg] == 'E' && b[seg + 1] == 'x'
+                    && b[seg + 2] == 'i' && b[seg + 3] == 'f' && b[seg + 4] == 0 && b[seg + 5] == 0) {
+                return tiffOrientation(b, seg + 6, i + 2 + len);
+            }
+            i += 2 + len;
+        }
+        return 1;
+    }
+
+    private static int tiffOrientation(byte[] b, int tiff, int end) {
+        if (tiff + 8 > end) {
+            return 1;
+        }
+        boolean little;
+        if (b[tiff] == 'I' && b[tiff + 1] == 'I') {
+            little = true;
+        } else if (b[tiff] == 'M' && b[tiff + 1] == 'M') {
+            little = false;
+        } else {
+            return 1;
+        }
+        long ifd = tiff + u32(b, tiff + 4, little);
+        if (ifd < tiff || ifd + 2 > end) {
+            return 1;
+        }
+        int count = u16(b, (int) ifd, little);
+        for (int k = 0; k < count; k++) {
+            int entry = (int) ifd + 2 + 12 * k;
+            if (entry + 12 > end) {
+                return 1;
+            }
+            if (u16(b, entry, little) == 0x0112) { // Orientation, a SHORT
+                int v = u16(b, entry + 8, little);
+                return v >= 1 && v <= 8 ? v : 1;
+            }
+        }
+        return 1;
+    }
+
+    private static int u16(byte[] b, int at, boolean little) {
+        int x = b[at] & 0xFF;
+        int y = b[at + 1] & 0xFF;
+        return little ? x | (y << 8) : (x << 8) | y;
+    }
+
+    private static long u32(byte[] b, int at, boolean little) {
+        long v = 0;
+        for (int k = 0; k < 4; k++) {
+            long byteValue = b[at + (little ? 3 - k : k)] & 0xFF;
+            v = (v << 8) | byteValue;
+        }
+        return v;
+    }
+
+    /** Turns/flips a picture as its EXIF orientation says (2–8). */
+    static BufferedImage orient(BufferedImage src, int orientation) {
+        if (orientation < 2 || orientation > 8) {
+            return src;
+        }
+        int w = src.getWidth();
+        int h = src.getHeight();
+        boolean swap = orientation >= 5;
+        int dw = swap ? h : w;
+        int dh = swap ? w : h;
+        int[] in = src.getRGB(0, 0, w, h, null, 0, w);
+        int[] out = new int[in.length];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int tx;
+                int ty;
+                switch (orientation) {
+                    case 2 -> { tx = w - 1 - x; ty = y; }
+                    case 3 -> { tx = w - 1 - x; ty = h - 1 - y; }
+                    case 4 -> { tx = x; ty = h - 1 - y; }
+                    case 5 -> { tx = y; ty = x; }
+                    case 6 -> { tx = h - 1 - y; ty = x; }          // turn right
+                    case 7 -> { tx = h - 1 - y; ty = w - 1 - x; }
+                    default -> { tx = y; ty = w - 1 - x; }         // 8: turn left
+                }
+                out[ty * dw + tx] = in[y * w + x];
+            }
+        }
+        BufferedImage dst = new BufferedImage(dw, dh, src.getType() == 0
+                ? BufferedImage.TYPE_INT_RGB : src.getType());
+        dst.setRGB(0, 0, dw, dh, out, 0, dw);
+        return dst;
     }
 
     /** "png", "jpeg", or null — from the file's own first bytes. */

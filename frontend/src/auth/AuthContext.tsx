@@ -62,7 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // setStatus would never fire, and status would sit on 'booting' forever,
     // which renders as an app where nothing responds to clicks.
     api
-      .refresh()
+      .refreshShared()
       .then((r) => {
         setUser(r.user);
         setStatus('authenticated');
@@ -73,6 +73,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // console; that is Chrome reporting the request, not a bug.
         setStatus('anonymous');
       });
+  }, []);
+
+  // The session can end without anyone pressing "Sign out": the refresh
+  // cookie expires, or is revoked elsewhere. The API layer then drops the
+  // access token — and this is how the screen finds out, instead of still
+  // showing a signed-in user whose every request now fails.
+  useEffect(() => {
+    api.subscribeToToken((token) => {
+      if (token == null) {
+        setUser(null);
+        setStatus((s) => (s === 'authenticated' ? 'anonymous' : s));
+      }
+    });
   }, []);
 
   const adopt = useCallback((result: AuthResult) => {
@@ -133,6 +146,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     try {
       await api.signOut();
+    } catch {
+      // The server could not be told (offline, or the session had already
+      // ended there). Signing out here is what was asked, and happens below.
     } finally {
       // Clear locally even if the server call failed. The refresh cookie is
       // httpOnly and expires on its own, and the user asked to be signed

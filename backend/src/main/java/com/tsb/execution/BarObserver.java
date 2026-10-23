@@ -29,7 +29,9 @@ public interface BarObserver {
         /** SELL while flat. */
         IGNORED_NOTHING_TO_SELL,
         /** Rounded to zero, or below the exchange's minimum order value. */
-        REJECTED_TOO_SMALL
+        REJECTED_TOO_SMALL,
+        /** A fixed-size BUY that costs more than the cash available. */
+        REJECTED_NOT_ENOUGH_CASH
     }
 
     /**
@@ -51,5 +53,14 @@ public interface BarObserver {
      */
     default void onOrder(int signalBar, int fillBar, int ruleIndex,
                          int stmtIndex, FillOutcome outcome) {
+    }
+
+    /**
+     * Called at each checked close, after the rules ran: the protective
+     * settings that apply from the next candle on (percent as written, 0 =
+     * off), and the highest price since entry the trailing stop follows.
+     */
+    default void onLevels(int bar, double stopPct, double takeProfitPct,
+                          double trailingPct, double peakSinceEntry) {
     }
 }

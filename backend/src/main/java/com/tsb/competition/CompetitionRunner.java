@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -39,6 +40,13 @@ import java.util.Map;
  * (the ingestion job's closed-bar cutoff), so no entry ever sees a candle
  * that is still forming. Each competition is one transaction: a candle is
  * applied to every entry, or to none.
+ *
+ * <p><b>One entry can't stop the others.</b> An entry that can't be run —
+ * its stored version no longer compiles, its hash check fails, or the
+ * engine throws on it — is disqualified on its own (status FAILED, with the
+ * reason) and everyone else carries on. Before, the exception rolled back
+ * the whole competition, the scheduler retried every 30 seconds forever,
+ * and the competition never ended.
  */
 @Service
 public class CompetitionRunner {
@@ -47,8 +55,11 @@ public class CompetitionRunner {
 
     /** Past candles loaded before the start so indicators are warm on day one. */
     static final int MIN_WARMUP_BUFFER = 50;
-    /** How long past the end to wait for the final candle before closing anyway. */
+    /** How long past the end to wait for the final candle, as long as the
+     *  candle sync has moved past the end (so it is missing, not late). */
     static final Duration FINAL_CANDLE_GRACE = Duration.ofHours(1);
+    /** After this long, finish anyway, even if the data never arrived. */
+    static final Duration FINAL_CANDLE_HARD_STOP = Duration.ofHours(24);
 
     private final CompetitionRepository competitions;
     private final CompetitionEntryRepository entries;
@@ -82,7 +93,9 @@ public class CompetitionRunner {
     /** Everything due for one competition, in one transaction. */
     @Transactional
     public void advance(long competitionId) {
-        Competition c = competitions.findById(competitionId).orElseThrow();
+        // Row lock: a cancel can't interleave with a run and be overwritten
+        // by it (or overwrite it). Whoever comes second waits.
+        Competition c = competitions.findLockedById(competitionId).orElseThrow();
         Instant now = Instant.now();
 
         if (c.status() == Competition.Status.OPEN) {
@@ -114,7 +127,8 @@ public class CompetitionRunner {
         Instant lastExpected = c.getEndsAt().minus(bar);
         boolean finalCandleIn = c.getLastCandle() != null
                 && !c.getLastCandle().isBefore(lastExpected);
-        if (ended && (finalCandleIn || now.isAfter(c.getEndsAt().plus(FINAL_CANDLE_GRACE)))) {
+        if (ended && (finalCandleIn || finalCandleMissing(c, now) || now.isAfter(
+                c.getEndsAt().plus(FINAL_CANDLE_HARD_STOP)))) {
             end(c, series, all);
         }
         competitions.save(c);
@@ -144,13 +158,86 @@ public class CompetitionRunner {
             if (state.finished()) {
                 continue; // eliminated earlier: skip this entry
             }
-            CompetitionEngine engine = engineFor(entry, series, exchange, rules);
-            for (int i = from; i < series.size() && !state.finished(); i++) {
-                persist(entry.getId(), engine.step(state, i));
+            // Step in memory first; write only if the whole run went through,
+            // so a failure part-way leaves no half-applied candles behind.
+            List<CompetitionEngine.Event> events = new ArrayList<>();
+            try {
+                CompetitionEngine engine = engineFor(entry, series, exchange, rules);
+                for (int i = from; i < series.size() && !state.finished(); i++) {
+                    events.addAll(engine.step(state, i));
+                }
+            } catch (RuntimeException | StackOverflowError e) {
+                // A stack overflow is an Error, not an exception: without
+                // catching it too, one entry could still stop the rest.
+                disqualify(c, entry, series, rules, e);
+                continue;
             }
+            persist(entry.getId(), events);
             entry.save(state); // save all state at once
         }
         rank(c, all);
+    }
+
+    /**
+     * Takes an entry that can't be run out of the competition, on its own:
+     * any open position is closed at the close of the last candle it did
+     * process, and it finishes as FAILED with the reason. Its earlier,
+     * already-saved candles stay exactly as they were.
+     */
+    private void disqualify(Competition c, CompetitionEntry entry, CandleSeries series,
+                            RuleSet rules, Throwable cause) {
+        log.warn("competition {}: entry {} disqualified: {}", c.getId(), entry.getId(),
+                cause.toString());
+        EntryState s = entry.toState(); // the last saved state, untouched
+        List<CompetitionEngine.Event> events = new ArrayList<>();
+        int at = indexOf(series, s.lastCandle);
+        if (s.qty > 0 && at >= 0) {
+            double price = series.close()[at];
+            double fee = rules.feeFraction();
+            double exitFee = s.qty * price * fee;
+            double pnl = s.qty * (price - s.entryPrice) - s.entryFees - exitFee;
+            events.add(new CompetitionEngine.Closed(s.entryTime, series.openTimeMillis()[at],
+                    s.qty, s.entryPrice, price, s.entryFees + exitFee, pnl, "DISQUALIFIED"));
+            s.cash += s.qty * price - exitFee;
+            s.qty = 0;
+        }
+        s.equity = s.qty > 0 ? s.equity : s.cash;
+        s.pending.clear();
+        s.status = EntryState.Status.FAILED;
+        String why = cause.getMessage() == null ? cause.getClass().getSimpleName()
+                : cause.getMessage();
+        if (why.length() > 200) {
+            why = why.substring(0, 200) + "…";
+        }
+        s.statusReason = "Disqualified: this entry could not be run (" + why + ").";
+        s.statusCandle = s.lastCandle;
+        persist(entry.getId(), events);
+        entry.save(s);
+    }
+
+    private static int indexOf(CandleSeries series, long openTime) {
+        long[] t = series.openTimeMillis();
+        for (int i = t.length - 1; i >= 0; i--) {
+            if (t[i] == openTime) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The final candle is MISSING (not just late): the grace period is over
+     * and the candle sync already holds candles at or after the end. If the
+     * sync itself is behind (the server was down), keep waiting — finishing
+     * now would close positions at an hours-old price, for good.
+     */
+    private boolean finalCandleMissing(Competition c, Instant now) {
+        if (!now.isAfter(c.getEndsAt().plus(FINAL_CANDLE_GRACE))) {
+            return false;
+        }
+        return candles.latestOpenTime(c.getSymbolId(), c.getTimeframe())
+                .map(latest -> !latest.isBefore(c.getEndsAt()))
+                .orElse(false);
     }
 
     // ── End of competition ─────────────────────────────────────────────
@@ -162,14 +249,20 @@ public class CompetitionRunner {
         for (CompetitionEntry entry : all) {
             EntryState state = entry.toState();
             if (state.status == EntryState.Status.ACTIVE) {
-                CompetitionEngine engine = engineFor(entry, series, exchange, rules);
-                persist(entry.getId(), engine.finish(state, last));
-            } else if (state.status == EntryState.Status.ELIMINATED) {
-                // Eliminated during the run: that is a fail, for the stated reason.
-                state.status = EntryState.Status.FAILED;
-                state.statusReason = "Eliminated — " + state.statusReason;
+                List<CompetitionEngine.Event> events;
+                try {
+                    CompetitionEngine engine = engineFor(entry, series, exchange, rules);
+                    events = engine.finish(state, last);
+                } catch (RuntimeException | StackOverflowError e) {
+                    disqualify(c, entry, series, rules, e);
+                    continue;
+                }
+                persist(entry.getId(), events);
+                entry.save(state);
             }
-            entry.save(state);
+            // An ELIMINATED entry stays ELIMINATED: it is a fail, and keeping
+            // the status keeps it ranked below every entry that survived
+            // (turning it into FAILED here used to reorder the final table).
         }
         rank(c, all);
         c.finish();

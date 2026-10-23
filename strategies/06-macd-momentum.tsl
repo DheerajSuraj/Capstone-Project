@@ -1,0 +1,23 @@
+// MACD Momentum: buy when MACD crosses above its signal line while a real
+// trend is present (ADX above 20) and price is above the 100 EMA.
+strategy "MACD Momentum" {
+    symbol = BTCUSDT
+    timeframe = 4h
+    capital = 10000
+    fee = 0.1%
+
+    let macd = MACD_LINE(12, 26)
+    let signal = MACD_SIGNAL(12, 26, 9)
+
+    rule entry {
+        IF CROSSOVER(macd, signal) AND ADX(14) > 20 AND CLOSE > EMA(CLOSE, 100) THEN BUY ALL
+    }
+
+    rule exit {
+        IF CROSSUNDER(macd, signal) THEN SELL ALL
+    }
+
+    rule protect {
+        IF CLOSE > 0 THEN SET TRAILING = 6%
+    }
+}

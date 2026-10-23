@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import HomeView from './views/HomeView'
 import BuilderView from './views/BuilderView'
+import LabView from './views/LabView'
 import StrategiesView from './views/StrategiesView'
 import CompetitionView from './views/CompetitionView'
 import ForumView from './views/ForumView'
@@ -26,12 +27,13 @@ const STARTER = `strategy "My Strategy" {
 }
 `
 
-type View = 'home' | 'builder' | 'strategies' | 'competition' | 'forum'
+type View = 'home' | 'builder' | 'strategies' | 'lab' | 'competition' | 'forum'
 
 const NAV: { view: View; glyph: string; label: string }[] = [
   { view: 'home', glyph: '▥', label: 'Live chart' },
   { view: 'builder', glyph: '⬚', label: 'Builder' },
   { view: 'strategies', glyph: '☰', label: 'My strategies' },
+  { view: 'lab', glyph: '⚗', label: 'Strategy lab' },
   { view: 'competition', glyph: '⚑', label: 'Competitions' },
   { view: 'forum', glyph: '❝', label: 'Forum' },
 ]
@@ -46,11 +48,38 @@ export default function App() {
   const [source, setSource] = useState(STARTER)
   const [name, setName] = useState('')
   const [editingId, setEditingId] = useState<number | null>(null)
+  // What the Blocks view last produced, and its blocks: the Builder opens on
+  // Code whenever the source is anything else, and coming back to Blocks
+  // shows the user's blocks rather than the starter.
+  const [blocksSource, setBlocksSource] = useState<string | null>(null)
+  const [blocksState, setBlocksState] = useState<object | null>(null)
   const [authOpen, setAuthOpen] = useState(false)
   const [pendingView, setPendingView] = useState<View | null>(null)
   // A chart snapshot on its way from the Live chart to a new forum post.
   const [snapshot, setSnapshot] = useState<Blob | null>(null)
   const clearSnapshot = useCallback(() => setSnapshot(null), [])
+
+  // Who is using the app. When that changes — signing out, or someone else
+  // signing in — nothing of the last person may stay on screen: their
+  // strategy in the editor, their lists, their liked posts. The views that
+  // hold someone's own data are keyed by this, so they start fresh; the
+  // editor's state lives here and is reset by hand. (The live chart and the
+  // forum follow sign-in and sign-out themselves, keeping your place.)
+  const person = status === 'authenticated' && user ? `user:${user.id}` : 'anonymous'
+  const lastPerson = useRef(person)
+  useEffect(() => {
+    if (lastPerson.current === person) return
+    const someoneLeft = lastPerson.current !== 'anonymous'
+    lastPerson.current = person
+    if (!someoneLeft) return // signing in keeps what an anonymous visitor had
+    setSource(STARTER)
+    setName('')
+    setEditingId(null)
+    setBlocksSource(null)
+    setBlocksState(null)
+    setSnapshot(null)
+    setView((v) => (isPublic(v) ? v : 'home'))
+  }, [person])
 
   // Send them where they were headed once they sign in, rather than making
   // them find the button again.
@@ -110,7 +139,14 @@ export default function App() {
           <button
             key={item.view}
             className={`rail-item ${view === item.view ? 'active' : ''}`}
-            onClick={() => go(item.view)}
+            onClick={(e) => {
+              go(item.view)
+              // The rail opens while it has focus (for keyboard users). After
+              // a mouse click that kept it open over the page's left edge —
+              // on top of buttons like "Run backtest" — until something
+              // else was clicked.
+              if (e.detail > 0) e.currentTarget.blur()
+            }}
           >
             <span className="glyph">{item.glyph}</span>
             <span className="label">{item.label}</span>
@@ -134,16 +170,33 @@ export default function App() {
         )}
         {view === 'builder' && (
           <BuilderView
+            key={person}
             source={source}
             setSource={setSource}
             name={name}
             setName={setName}
             editingId={editingId}
-            onSaved={() => setEditingId(null)}
+            onSaved={(id) => setEditingId(id)}
+            startInCode={editingId != null || (source !== STARTER && source !== blocksSource)}
+            blocksSource={blocksSource}
+            onBlocksSource={setBlocksSource}
+            blocksState={blocksState}
+            onBlocksState={setBlocksState}
           />
         )}
-        {view === 'strategies' && <StrategiesView onEdit={editStrategy} />}
-        {view === 'competition' && <CompetitionView />}
+        {view === 'strategies' && <StrategiesView key={person} onEdit={editStrategy} />}
+        {view === 'lab' && (
+          <LabView
+            key={person}
+            onLoad={(strategyName, src) => {
+              setEditingId(null)
+              setName(strategyName)
+              setSource(src)
+              setView('builder')
+            }}
+          />
+        )}
+        {view === 'competition' && <CompetitionView key={person} />}
         {view === 'forum' && (
           <ForumView
             signedIn={status === 'authenticated'}

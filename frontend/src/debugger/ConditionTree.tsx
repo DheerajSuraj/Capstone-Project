@@ -38,12 +38,19 @@ function Part({
   if (isLeaf(node)) return <LeafCard node={node} highlight={highlight} />
 
   if (node.kind === 'LET') {
+    // A named condition used twice is drawn in full only the first time;
+    // the other copies (and very deep chains) carry just the answer.
+    const body = node.children[0]
     return (
       <div className="tsb-grp">
         <div className="tsb-grp__title">
           <Tick node={node} /> “{node.text}”
         </div>
-        <Part node={node.children[0]} highlight={highlight} />
+        {body ? (
+          <Part node={body} highlight={highlight} />
+        ) : (
+          node.note && <div className="tsb-leaf__note">{node.note}</div>
+        )}
       </div>
     )
   }
@@ -111,6 +118,7 @@ function LeafCard({
         )}
       </div>
       <code className="tsb-leaf__code">{node.text}</code>
+      {node.timeframeNote && <div className="tsb-leaf__tf">🕓 {node.timeframeNote}</div>}
       {node.unknown ? (
         <div className="tsb-leaf__wait">
           ⏳ Not enough history yet: this indicator has no value on this candle.

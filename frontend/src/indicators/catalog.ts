@@ -70,6 +70,10 @@ export type ActiveIndicator = {
   args: number[]
   color: string
   visible: boolean
+  /** Drawn from bigger candles, as a strategy's "... ON 4h" reads it. */
+  timeframe?: string
+  /** Lookback in those bigger candles. */
+  offset?: number
 }
 
 export type SeriesValues = {
@@ -286,6 +290,7 @@ export async function computeIndicators(input: {
         name: i.spec.name,
         source: i.source,
         args: i.args,
+        ...(i.timeframe ? { timeframe: i.timeframe, offset: i.offset ?? 0 } : {}),
       })),
     }),
   })
@@ -312,6 +317,9 @@ export function defaultSource(spec: IndicatorSpec): PriceField | undefined {
 /**
  * "SMA(CLOSE,20)" — deliberately the same shape as the engine's own key, so
  * the legend, the manifest and a TSL strategy all call the line one thing.
+ * That includes the brackets of an indicator with no settings: the engine
+ * says "VWAP()", and plain "VWAP" made the same line a second, duplicate
+ * entry when added from the picker to a strategy's chart.
  */
 export function describe(
   spec: IndicatorSpec,
@@ -319,11 +327,13 @@ export function describe(
   args: number[],
 ): string {
   const parts = [...(source ? [source] : []), ...args.map(String)]
-  return parts.length === 0 ? spec.name : `${spec.name}(${parts.join(',')})`
+  return `${spec.name}(${parts.join(',')})`
 }
 
 export function describeActive(a: ActiveIndicator): string {
-  return describe(a.spec, a.source, a.args)
+  const base = describe(a.spec, a.source, a.args)
+  if (!a.timeframe) return base
+  return `${base}${a.offset ? `[${a.offset}]` : ''} on ${a.timeframe}`
 }
 
 /** Adding the same indicator twice should be a no-op, not a hidden duplicate. */
@@ -342,6 +352,8 @@ export type UsedIndicator = {
   source: string | null
   args: number[]
   key: string
+  timeframe?: string | null
+  offset?: number
 }
 
 /**
@@ -368,6 +380,7 @@ export function fromUsedIndicators(
       args: u.args,
       color: nextColor(out.map((a) => a.color)),
       visible: true,
+      ...(u.timeframe ? { timeframe: u.timeframe, offset: u.offset ?? 0 } : {}),
     })
   }
   return out

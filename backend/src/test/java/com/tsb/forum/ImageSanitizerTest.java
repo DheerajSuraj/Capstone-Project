@@ -87,6 +87,72 @@ class ImageSanitizerTest {
     }
 
     @Test
+    @DisplayName("more than 16 megapixels is refused before decoding, with the reason")
+    void pixelCap() throws IOException {
+        byte[] png = encode(1, 1, "png");
+        ByteBuffer.wrap(png, 16, 8).putInt(5000).putInt(4000); // 20 MP, sides under 8000
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> ImageSanitizer.clean(png));
+        assertTrue(e.getMessage().contains("16 megapixels"), e.getMessage());
+    }
+
+    /** A JPEG with an EXIF block saying "turn me" (orientation 1..8). */
+    private static byte[] withOrientation(byte[] jpg, int orientation) throws IOException {
+        ByteArrayOutputStream exif = new ByteArrayOutputStream();
+        exif.write("Exif\0\0".getBytes(StandardCharsets.ISO_8859_1));
+        exif.write(new byte[]{'M', 'M', 0, 0x2A, 0, 0, 0, 8}); // big-endian TIFF, IFD0 at 8
+        exif.write(new byte[]{0, 1});                           // one entry
+        exif.write(new byte[]{0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, (byte) orientation, 0, 0});
+        exif.write(new byte[]{0, 0, 0, 0});                     // no next IFD
+        byte[] payload = exif.toByteArray();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(jpg, 0, 2); // SOI
+        out.write(0xFF);
+        out.write(0xE1);
+        out.write((payload.length + 2) >> 8);
+        out.write((payload.length + 2) & 0xFF);
+        out.write(payload);
+        out.write(jpg, 2, jpg.length - 2);
+        return out.toByteArray();
+    }
+
+    @Test
+    @DisplayName("a phone photo stored sideways (EXIF orientation 6) comes out upright")
+    void exifTurn() throws IOException {
+        // 40 x 20, left half red, right half blue.
+        BufferedImage img = new BufferedImage(40, 20, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < 20; y++) {
+            for (int x = 0; x < 40; x++) {
+                img.setRGB(x, y, x < 20 ? 0xFF0000 : 0x0000FF);
+            }
+        }
+        ByteArrayOutputStream jpg = new ByteArrayOutputStream();
+        ImageIO.write(img, "jpg", jpg);
+        byte[] turned = withOrientation(jpg.toByteArray(), 6);
+        assertEquals(6, ImageSanitizer.exifOrientation(turned));
+
+        ImageSanitizer.Clean c = ImageSanitizer.clean(turned);
+        assertEquals(20, c.width());
+        assertEquals(40, c.height());
+        BufferedImage out = ImageIO.read(new java.io.ByteArrayInputStream(c.bytes()));
+        // Turned a quarter to the right: the left (red) half is now on top.
+        int top = out.getRGB(10, 5);
+        int bottom = out.getRGB(10, 35);
+        assertTrue(((top >> 16) & 0xFF) > 200 && (top & 0xFF) < 60, Integer.toHexString(top));
+        assertTrue((bottom & 0xFF) > 200 && ((bottom >> 16) & 0xFF) < 60, Integer.toHexString(bottom));
+    }
+
+    @Test
+    @DisplayName("broken EXIF is ignored, not fatal")
+    void brokenExif() throws IOException {
+        assertEquals(1, ImageSanitizer.exifOrientation(encode(10, 10, "jpg")));
+        byte[] bad = withOrientation(encode(10, 10, "jpg"), 6);
+        bad[2 + 4 + 6] = 'X'; // not II or MM any more
+        assertEquals(1, ImageSanitizer.exifOrientation(bad));
+        assertEquals(10, ImageSanitizer.clean(bad).width());
+    }
+
+    @Test
     @DisplayName("empty and oversized uploads are refused")
     void sizes() {
         assertThrows(IllegalArgumentException.class, () -> ImageSanitizer.clean(new byte[0]));

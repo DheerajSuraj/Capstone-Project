@@ -86,11 +86,16 @@ public class StrategyService {
 
     @Transactional
     public SaveOutcome addVersion(long userId, long strategyId, String source) {
-        Strategy strategy = owned(userId, strategyId);
+        owned(userId, strategyId);
         CompilationService.Outcome compiled = compilation.compile(source);
         if (!compiled.ok()) {
             return new SaveOutcome(Optional.empty(), compiled.diagnostics());
         }
+        // Two saves at once (a double click, two tabs) both read the same
+        // highest number, and the second insert broke the unique key — an
+        // error 500. Locking the strategy row makes them take turns.
+        Strategy strategy = strategies.findLockedById(strategyId).orElseThrow(() ->
+                new IllegalArgumentException("no strategy " + strategyId));
         int next = versions.maxVersionNumber(strategyId) + 1;
         strategy.touch();
         strategies.save(strategy);

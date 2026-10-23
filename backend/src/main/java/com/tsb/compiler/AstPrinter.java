@@ -29,6 +29,7 @@ public final class AstPrinter {
             case Expr.Call c -> c.name() + "(" + String.join(", ",
                     c.args().stream().map(AstPrinter::print).toList()) + ")";
             case Expr.Lookback l -> print(l.target()) + "[" + l.offset() + "]";
+            case Expr.On o -> print(o.target()) + " ON " + o.timeframe();
             case Expr.Unary u -> (u.op() == Expr.UnaryOp.NOT ? "NOT " : "-")
                     + print(u.operand());
             case Expr.Binary b -> "(" + print(b.left()) + " " + symbol(b.op())

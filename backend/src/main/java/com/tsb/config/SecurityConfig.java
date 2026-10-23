@@ -2,6 +2,7 @@ package com.tsb.config;
 
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import com.tsb.auth.AuthProperties;
+import com.tsb.auth.TokenService;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import javax.crypto.spec.SecretKeySpec;
@@ -18,10 +19,14 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jwt.BadJwtException;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.security.oauth2.server.resource.web.BearerTokenResolver;
+import org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -119,14 +124,23 @@ public class SecurityConfig {
                 // reporting still need a signed-in user.
                 .requestMatchers(HttpMethod.GET, "/api/forum/**").permitAll()
 
-                .requestMatchers("/actuator/health").permitAll()
+                // Health (and its liveness/readiness probes) for uptime
+                // checks; the rest of the actuator (metrics, info) is not
+                // for the public, nor for every signed-in user.
+                .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                .requestMatchers("/actuator/**").denyAll()
+
+                // Spring's own error page. If it is not reachable, an error
+                // forwarded there loses its message on the way.
+                .requestMatchers("/error").permitAll()
 
                 // Everything else — strategies, backtests, competition
                 // entries — needs a user, because everything else is owned.
                 .anyRequest().authenticated())
 
             .oauth2ResourceServer(o -> o
-                .jwt(j -> j.decoder(jwtDecoder))
+                .bearerTokenResolver(bearerTokens())
+                .jwt(j -> j.decoder(accessTokensOnly(jwtDecoder)))
                 .authenticationEntryPoint((request, response, ex) -> {
                     // Default is a WWW-Authenticate challenge, which makes
                     // the browser pop a native basic-auth dialog. Return the
@@ -138,6 +152,39 @@ public class SecurityConfig {
                 }));
 
         return http.build();
+    }
+
+    /**
+     * Reads the Bearer header — except on the auth endpoints that exist for
+     * people whose access token has run out. The resource server checks any
+     * Bearer header BEFORE permitAll applies, so an expired one sent along
+     * with /refresh or /logout got a 401: the session could never be renewed
+     * without a reload, and signing out didn't end it.
+     */
+    private static BearerTokenResolver bearerTokens() {
+        DefaultBearerTokenResolver standard = new DefaultBearerTokenResolver();
+        return request -> {
+            String path = request.getRequestURI();
+            if (path != null && path.startsWith("/api/auth/") && !path.equals("/api/auth/me")) {
+                return null;
+            }
+            return standard.resolve(request);
+        };
+    }
+
+    /**
+     * The same key signs the 5-minute Google sign-up token, which must never
+     * work as a session: with it, someone without an account could call
+     * every signed-in endpoint.
+     */
+    private static JwtDecoder accessTokensOnly(JwtDecoder decoder) {
+        return token -> {
+            Jwt jwt = decoder.decode(token);
+            if (TokenService.PENDING_TYPE.equals(jwt.getClaimAsString("typ"))) {
+                throw new BadJwtException("a sign-up token is not an access token");
+            }
+            return jwt;
+        };
     }
 
     /**

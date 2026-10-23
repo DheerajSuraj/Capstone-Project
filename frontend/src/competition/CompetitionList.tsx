@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type CompetitionListDto, type CompetitionSummaryDto } from '../api'
-import { relative, ruleChips, STATUS_LABEL, when } from './util'
+import { relative, ruleChips, STATUS_LABEL, syncClock, when } from './util'
 
 export default function CompetitionList({
   onOpen,
@@ -14,9 +14,26 @@ export default function CompetitionList({
   const [, tick] = useState(0)
 
   useEffect(() => {
-    api.competitions().then(setData).catch((e) => setError(String(e.message ?? e)))
+    // Reloaded every 30 seconds, so a competition that opens, starts or ends
+    // while the page is open moves to the right list by itself.
+    const load = () =>
+      api
+        .competitions()
+        .then((d) => {
+          syncClock(d.serverTime)
+          setData(d)
+          setError(null)
+        })
+        .catch((e) => setError(String(e.message ?? e)))
+    load()
+    const refresh = setInterval(() => {
+      if (document.visibilityState === 'visible') load()
+    }, 30_000)
     const t = setInterval(() => tick((n) => n + 1), 1000) // live countdowns
-    return () => clearInterval(t)
+    return () => {
+      clearInterval(refresh)
+      clearInterval(t)
+    }
   }, [])
 
   const group = (s: CompetitionSummaryDto['status'][]) =>

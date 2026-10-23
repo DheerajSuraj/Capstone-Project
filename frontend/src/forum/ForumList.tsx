@@ -32,7 +32,13 @@ export default function ForumList({
       .forumPosts({ category: category ?? undefined, q: q || undefined, sort, page })
       .then((r) => {
         if (cancelled) return
-        setPosts((prev) => (page === 0 ? r.posts : [...prev, ...r.posts]))
+        setPosts((prev) => {
+          if (page === 0) return r.posts
+          // A post made while reading shifts every later page by one; skip
+          // what is already on screen rather than showing it twice.
+          const seen = new Set(prev.map((p) => p.id))
+          return [...prev, ...r.posts.filter((p) => !seen.has(p.id))]
+        })
         setHasMore(r.hasMore)
         setError(null)
       })
@@ -134,7 +140,9 @@ export default function ForumList({
                 )}
               </div>
             </div>
-            {p.thumbnail && <img className="tsb-f__thumb" src={p.thumbnail} alt="" loading="lazy" />}
+            {/* A hidden post's pictures need the sign-in token, which an
+                <img> can't send; its page shows them. */}
+            {p.thumbnail && !p.hidden && <img className="tsb-f__thumb" src={p.thumbnail} alt="" loading="lazy" />}
           </button>
         ))}
       </div>

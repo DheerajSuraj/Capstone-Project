@@ -16,8 +16,23 @@ export const when = (iso: string) =>
     minute: '2-digit',
   })
 
+/**
+ * The server's clock, as far as the browser can tell: the difference
+ * between the serverTime of the last answer and this computer's clock at
+ * that moment. Countdowns ("entries close in 4m") use it, so a laptop whose
+ * clock is off by minutes still counts down to the moment the server acts.
+ */
+let clockOffset = 0
+
+export function syncClock(serverTime: string | null | undefined): void {
+  const t = serverTime ? Date.parse(serverTime) : NaN
+  if (Number.isFinite(t)) clockOffset = t - Date.now()
+}
+
+export const serverNow = () => Date.now() + clockOffset
+
 /** "in 2h 5m", "3d 4h ago" */
-export function relative(iso: string, now = Date.now()): string {
+export function relative(iso: string, now = serverNow()): string {
   const diff = Date.parse(iso) - now
   const a = Math.abs(diff)
   const d = Math.floor(a / 86_400_000)
@@ -40,6 +55,39 @@ export const ENTRY_LABEL: Record<EntryStatus, string> = {
   ELIMINATED: 'Eliminated',
   PASSED: 'Passed',
   FAILED: 'Failed',
+}
+
+type Ranked = { rank: number | null; status: EntryStatus; equity: number }
+
+const GROUP: Record<EntryStatus, number> = { ACTIVE: 0, PASSED: 0, FAILED: 1, ELIMINATED: 2 }
+
+/**
+ * Places to show. Before the first candle every entry has the same money,
+ * so nobody has earned a place yet: none are shown. A cancelled competition
+ * has no winner either. Otherwise entries level on money (in the same
+ * group) share a place — 1, 1, 3 — instead of the earlier submission
+ * quietly getting the medal.
+ */
+export function shownRanks<T extends Ranked>(
+  entries: T[],
+  started: boolean,
+  cancelled: boolean,
+): Map<T, number | null> {
+  const out = new Map<T, number | null>()
+  if (!started || cancelled) {
+    entries.forEach((e) => out.set(e, null))
+    return out
+  }
+  const order = [...entries].sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9))
+  order.forEach((e, i) => {
+    const prev = order[i - 1]
+    const tied =
+      prev != null &&
+      GROUP[prev.status] === GROUP[e.status] &&
+      Math.abs(prev.equity - e.equity) < 0.005
+    out.set(e, tied ? (out.get(prev) ?? i + 1) : e.rank == null ? null : i + 1)
+  })
+  return out
 }
 
 /** The rule set as short chips. */

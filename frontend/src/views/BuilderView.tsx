@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   api,
   type BacktestResultDto,
@@ -7,6 +7,7 @@ import {
 } from '../api'
 import BlockEditor from '../blocks/BlockEditor'
 import ResultPanel from '../components/ResultPanel'
+import { STARTERS } from '../lab/starters'
 
 /**
  * The builder: blocks (the MVP centerpiece) or code, then Run for an
@@ -20,15 +21,45 @@ export default function BuilderView({
   setName,
   editingId,
   onSaved,
+  startInCode,
+  blocksSource,
+  onBlocksSource,
+  blocksState,
+  onBlocksState,
 }: {
   source: string
   setSource: (s: string) => void
   name: string
   setName: (s: string) => void
   editingId: number | null
-  onSaved: () => void
+  /** After a save: the strategy it went into, so the next save adds a
+   *  version to it instead of making another strategy. */
+  onSaved: (strategyId: number) => void
+  /** Open on the Code tab: the source came from somewhere other than the blocks. */
+  startInCode?: boolean
+  /** The last code the Blocks view produced (null = never used). */
+  blocksSource?: string | null
+  onBlocksSource?: (s: string) => void
+  blocksState?: object | null
+  onBlocksState?: (state: object) => void
 }) {
-  const [mode, setMode] = useState<'blocks' | 'text'>(editingId ? 'text' : 'blocks')
+  const [mode, setMode] = useState<'blocks' | 'text'>(
+    editingId || startInCode ? 'text' : 'blocks',
+  )
+
+  // Blocks always show their own strategy. Switching to them replaces the
+  // code below — so say so first whenever that code is not theirs.
+  const toBlocks = () => {
+    if (mode === 'blocks') return
+    if (source.trim() && source !== blocksSource) {
+      const ok = window.confirm(
+        'The Blocks view shows its own strategy and will replace the code below. ' +
+          'Save first if you want to keep it. Switch to Blocks anyway?',
+      )
+      if (!ok) return
+    }
+    setMode('blocks')
+  }
   const [busy, setBusy] = useState(false)
   const [diagnostics, setDiagnostics] = useState<DiagnosticDto[]>([])
   const [runError, setRunError] = useState<string | null>(null)
@@ -38,28 +69,56 @@ export default function BuilderView({
   // The source exactly as it was when this result was produced — the
   // debugger must re-run THAT, not whatever is in the editor now.
   const [runSource, setRunSource] = useState<string | null>(null)
+  const [chartNote, setChartNote] = useState<string | null>(null)
+  // Runs are numbered, so a chart still loading for an earlier run can't
+  // land under the result of a later one.
+  const runSeq = useRef(0)
 
   const run = async () => {
+    const mine = ++runSeq.current
     setBusy(true)
     setResult(null)
     setCandles(null)
+    setChartNote(null)
     setRunError(null)
     setDiagnostics([])
+    setSavedNote(null)
     const submitted = source
     try {
       const res = await api.runAdhocBacktest(submitted)
+      if (mine !== runSeq.current) return
       if (res.ok && res.result) {
         setRunSource(submitted)
         setResult(res.result)
+        // The server's `to` is exclusive: end just past the last candle's
+        // open, or the chart would miss the run's final candle.
         api
           .getCandles(res.result.symbol, res.result.timeframe,
-            res.result.firstBarTime, res.result.lastBarTime)
-          .then(setCandles)
-          .catch(() => setCandles(null))
+            res.result.firstBarTime,
+            new Date(Date.parse(res.result.lastBarTime) + 1).toISOString())
+          .then((c) => {
+            if (mine !== runSeq.current) return
+            setCandles(c)
+            if (c.truncated) {
+              setChartNote(
+                `The chart shows the newest ${c.t.length.toLocaleString()} candles of this run; ` +
+                  'the numbers and the account chart cover all of it.',
+              )
+            }
+          })
+          .catch((e: unknown) => {
+            if (mine !== runSeq.current) return
+            setCandles(null)
+            setChartNote(`The price chart could not be loaded: ${e instanceof Error ? e.message : String(e)}`)
+          })
       } else if (res.runError) setRunError(res.runError)
       else setDiagnostics(res.diagnostics)
+    } catch (e) {
+      // A network failure or a server error used to vanish here, leaving
+      // the button doing nothing at all.
+      if (mine === runSeq.current) setRunError(e instanceof Error ? e.message : String(e))
     } finally {
-      setBusy(false)
+      if (mine === runSeq.current) setBusy(false)
     }
   }
 
@@ -67,6 +126,7 @@ export default function BuilderView({
     setBusy(true)
     setDiagnostics([])
     setSavedNote(null)
+    setRunError(null)
     try {
       const res = editingId
         ? await api.addVersion(editingId, source)
@@ -74,8 +134,10 @@ export default function BuilderView({
       if (!res.ok) setDiagnostics(res.diagnostics)
       else {
         setSavedNote(`Saved as v${res.versionNumber}`)
-        onSaved()
+        if (res.strategyId != null) onSaved(res.strategyId)
       }
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
@@ -90,7 +152,7 @@ export default function BuilderView({
           <button
             className="ghost"
             style={mode === 'blocks' ? { background: 'rgba(232,180,76,0.14)' } : undefined}
-            onClick={() => setMode('blocks')}
+            onClick={toBlocks}
           >
             Blocks
           </button>
@@ -103,8 +165,39 @@ export default function BuilderView({
           </button>
         </div>
 
+        {!editingId && (
+          <div className="tsb-starter">
+            <label htmlFor="starter">Start from a ready-made strategy</label>
+            <select
+              id="starter"
+              value=""
+              onChange={(e) => {
+                const s = STARTERS.find((x) => x.id === e.target.value)
+                if (!s) return
+                setSource(s.source)
+                setName(s.name)
+                setMode('text')
+              }}
+            >
+              <option value="">Choose one…</option>
+              {STARTERS.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.timeframe}) — {s.blurb}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         {mode === 'blocks' ? (
-          <BlockEditor onSource={setSource} />
+          <BlockEditor
+            onSource={(s) => {
+              setSource(s)
+              onBlocksSource?.(s)
+            }}
+            initialState={blocksState}
+            onState={onBlocksState}
+          />
         ) : (
           <>
             <label htmlFor="source">TSL source</label>
@@ -154,6 +247,7 @@ export default function BuilderView({
           result={result}
           candles={candles}
           source={runSource ?? undefined}
+          chartNote={chartNote}
         />
       )}
     </>

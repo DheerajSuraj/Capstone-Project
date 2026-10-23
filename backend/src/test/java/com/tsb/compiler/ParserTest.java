@@ -385,4 +385,80 @@ class ParserTest {
             assertEquals(List.of(), r.diagnostics());
         }
     }
+
+    // ── Recovery always finishes (the bug that could crash the server) ──
+
+    @Nested
+    @DisplayName("recovery always terminates")
+    class AlwaysTerminates {
+
+        /** Parses on a separate thread and fails if it takes over 2 s —
+         *  the old parser looped forever on these and ran out of memory. */
+        private Parser.ParseResult parseWithin2s(String source) {
+            Lexer.LexResult lexed = new Lexer(source).scan();
+            Parser.ParseResult[] out = new Parser.ParseResult[1];
+            Thread t = new Thread(() -> out[0] = new Parser(lexed.tokens()).parse());
+            t.setDaemon(true);
+            t.start();
+            try {
+                t.join(2000);
+            } catch (InterruptedException e) {
+                throw new AssertionError(e);
+            }
+            assertFalse(t.isAlive(), "parser did not finish within 2 s: " + source);
+            return out[0];
+        }
+
+        @Test
+        @DisplayName("an IF written outside any rule is one clear error, not an endless loop")
+        void topLevelIf() {
+            Parser.ParseResult r = parseWithin2s("""
+                    strategy "T" {
+                        symbol = BTCUSDT
+                        IF CLOSE > 1 THEN BUY ALL
+                        rule ok { IF CLOSE > 2 THEN SELL ALL }
+                    }
+                    """);
+            assertEquals("PAR009", r.diagnostics().get(0).code());
+            assertTrue(r.diagnostics().get(0).message().contains("inside a rule"));
+            assertEquals(1, r.diagnostics().size(), "one mistake, one message: " + r.diagnostics());
+            assertEquals(1, r.strategy().orElseThrow().rules().size(),
+                    "the rule after it is still parsed");
+        }
+
+        @Test
+        @DisplayName("a config key with no value does not swallow the rule after it")
+        void configWithoutValue() {
+            Parser.ParseResult r = parseWithin2s("""
+                    strategy "T" {
+                        capital =
+                        rule r { IF CLOSE > 1 THEN BUY ALL }
+                    }
+                    """);
+            assertTrue(r.diagnostics().get(0).message().contains("needs a value"),
+                    r.diagnostics().toString());
+            assertEquals(1, r.strategy().orElseThrow().rules().size());
+        }
+
+        @Test
+        @DisplayName("a number the lexer rejects (1e400) still ends in a normal error")
+        void lexerDroppedValue() {
+            Parser.ParseResult r = parseWithin2s("""
+                    strategy "T" {
+                        capital = 1e400
+                        rule r { IF CLOSE > 1 THEN BUY ALL }
+                    }
+                    """);
+            assertTrue(r.hasErrors());
+        }
+
+        @Test
+        @DisplayName("garbage of any length gives at most a capped list of errors")
+        void errorsAreCapped() {
+            String junk = "IF ".repeat(5000) + ") ".repeat(5000);
+            Parser.ParseResult r = parseWithin2s("strategy \"T\" { " + junk + " }");
+            assertTrue(r.diagnostics().size() <= Parser.MAX_ERRORS + 1,
+                    "got " + r.diagnostics().size());
+        }
+    }
 }

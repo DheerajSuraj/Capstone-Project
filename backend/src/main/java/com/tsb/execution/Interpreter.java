@@ -1,10 +1,13 @@
 package com.tsb.execution;
 
+import com.tsb.compiler.CompiledStrategy;
 import com.tsb.compiler.Expr;
+import com.tsb.compiler.LetHistory;
 import com.tsb.compiler.Registry;
 import com.tsb.compiler.StrategyAst;
 import com.tsb.marketdata.CandleSeries;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,78 +23,155 @@ import java.util.Optional;
  * one, AST constructor layer two). This interpreter cannot EXPRESS a read
  * of bar i+1. An out-of-range past read (i-k &lt; 0) yields NaN.
  *
- * <p><b>NaN is load-bearing:</b> Java defines every comparison with NaN as
- * false. So during indicator warm-up ({@code RSI(14) < 30} vs NaN) and
- * before lookback depth exists, conditions are false and strategies are
- * structurally inert — no special-case code, the IEEE-754 rules and the
- * NaN warm-up prefix compose into the safety property.
+ * <p><b>Missing data is load-bearing:</b> during indicator warm-up
+ * ({@code RSI(14) < 30} vs NaN), before lookback depth exists, and after a
+ * division by zero, a comparison has no answer. Conditions are evaluated
+ * with three values — true, false, unknown — and only a definite true
+ * trades, so strategies are structurally inert until their data exists.
+ * Unknown survives NOT (NOT of "can't tell" is still "can't tell"), which
+ * plain Java booleans could not express: there, NOT turned a NaN
+ * comparison's false into a buy.
  *
- * <p>Per-bar let caching: each {@code let} is evaluated at most once per
- * bar regardless of how many times rules reference it, preserving the
- * O(nodes-per-bar) bound even for heavily reused lets.
+ * <p>Let caching: each {@code let} is evaluated at most once per bar,
+ * however many times rules and other lets read it — at that bar or, through
+ * a lookback like {@code m[3]}, at earlier ones. Each let keeps exactly as
+ * many past values as anything reads back ({@link LetHistory}). (It used to
+ * keep only the current bar, so {@code a2 = a1[1] + a1[2]},
+ * {@code a3 = a2[1] + a2[2]}, ... re-evaluated everything below for every
+ * read: twice the work per line, minutes per backtest at 20 lines.)
  */
 public final class Interpreter {
 
     private final CandleSeries series;
     private final Map<String, double[]> bank;
     private final Map<String, StrategyAst.LetDecl> lets = new HashMap<>();
+    /** How many past values each let keeps, from {@link LetHistory}. */
+    private final Map<String, Integer> history;
+    /** Each let's recent values, made on first use. */
+    private final Map<String, Ring> rings = new HashMap<>();
 
-    private int cachedBar = -1;
-    private final Map<String, Double> numCache = new HashMap<>();
-    private final Map<String, Boolean> boolCache = new HashMap<>();
+    /** For a compiled strategy: its lets, sized by what its rules read. */
+    public Interpreter(CompiledStrategy strategy, CandleSeries series,
+                       Map<String, double[]> bank) {
+        this(strategy.lets(), strategy.rules(), series, bank);
+    }
+
+    /** Lets only (tests): history comes from what the lets read of each
+     *  other; a rule's own lookback on a let is then simply worked out
+     *  again, which is correct, just not cached. */
+    public Interpreter(List<StrategyAst.LetDecl> letDecls,
+                       CandleSeries series, Map<String, double[]> bank) {
+        this(letDecls, List.of(), series, bank);
+    }
 
     public Interpreter(List<StrategyAst.LetDecl> letDecls,
+                       List<StrategyAst.RuleDecl> rules,
                        CandleSeries series, Map<String, double[]> bank) {
         this.series = series;
         this.bank = bank;
         for (StrategyAst.LetDecl let : letDecls) {
             lets.put(let.name(), let);
         }
+        this.history = LetHistory.of(letDecls, rules);
     }
 
     // ── Boolean evaluation ──────────────────────────────────────────────
 
+    /** Three answers a condition can give. UNKNOWN is "the data isn't
+     *  there": an indicator still warming up, a lookback before the first
+     *  candle, a division by zero. */
+    public static final byte FALSE = 0;
+    public static final byte TRUE = 1;
+    public static final byte UNKNOWN = 2;
+
     /** Evaluates a condition at bar i. The analyzer guarantees the
      *  expression IS boolean-typed; anything else here is a compiler bug
-     *  and throws loudly rather than mis-trading quietly. */
+     *  and throws loudly rather than mis-trading quietly.
+     *
+     *  <p>Only a definite TRUE trades. Unknown answers false — and stays
+     *  unknown through NOT, so {@code NOT (CLOSE > MACD_SIGNAL(12, 26, 9))}
+     *  does not buy during the warm-up just because the inner part could
+     *  not be answered yet. */
     public boolean bool(Expr e, int i) {
+        return tri(e, i) == TRUE;
+    }
+
+    /**
+     * The condition's three-valued answer (Kleene logic): AND is false if
+     * any part is false, OR is true if any part is true, otherwise unknown
+     * wins over the rest; NOT swaps true and false and keeps unknown.
+     */
+    public byte tri(Expr e, int i) {
         return switch (e) {
             case Expr.Binary b -> switch (b.op()) {
-                case AND -> bool(b.left(), i) && bool(b.right(), i);
-                case OR -> bool(b.left(), i) || bool(b.right(), i);
-                case LT -> num(b.left(), i) < num(b.right(), i);
-                case GT -> num(b.left(), i) > num(b.right(), i);
-                case LE -> num(b.left(), i) <= num(b.right(), i);
-                case GE -> num(b.left(), i) >= num(b.right(), i);
-                case EQ -> num(b.left(), i) == num(b.right(), i);
-                case NEQ -> {
+                case AND -> {
+                    byte l = tri(b.left(), i);
+                    if (l == FALSE) {
+                        yield FALSE; // short-circuit, as before
+                    }
+                    byte r = tri(b.right(), i);
+                    yield r == FALSE ? FALSE : (l == UNKNOWN || r == UNKNOWN) ? UNKNOWN : TRUE;
+                }
+                case OR -> {
+                    byte l = tri(b.left(), i);
+                    if (l == TRUE) {
+                        yield TRUE;
+                    }
+                    byte r = tri(b.right(), i);
+                    yield r == TRUE ? TRUE : (l == UNKNOWN || r == UNKNOWN) ? UNKNOWN : FALSE;
+                }
+                case LT, GT, LE, GE, EQ, NEQ -> {
                     double l = num(b.left(), i);
                     double r = num(b.right(), i);
-                    // NaN must NOT satisfy != (NaN != x is true in Java):
-                    // unknown data answers every question with "false".
-                    yield !Double.isNaN(l) && !Double.isNaN(r) && l != r;
+                    // NaN (no data) and Infinity (a division by zero) have
+                    // no honest answer to "is it bigger?".
+                    if (!Double.isFinite(l) || !Double.isFinite(r)) {
+                        yield UNKNOWN;
+                    }
+                    boolean v = switch (b.op()) {
+                        case LT -> l < r;
+                        case GT -> l > r;
+                        case LE -> l <= r;
+                        case GE -> l >= r;
+                        case EQ -> l == r;
+                        default -> l != r; // NEQ
+                    };
+                    yield v ? TRUE : FALSE;
                 }
                 default -> throw compilerBug(e);
             };
-            case Expr.Unary u when u.op() == Expr.UnaryOp.NOT ->
-                    !bool(u.operand(), i);
+            case Expr.Unary u when u.op() == Expr.UnaryOp.NOT -> {
+                byte t = tri(u.operand(), i);
+                yield t == UNKNOWN ? UNKNOWN : t == TRUE ? FALSE : TRUE;
+            }
             case Expr.Call c -> boolCall(c, i);
             case Expr.VarRef v -> letBool(v.name(), i);
             default -> throw compilerBug(e);
         };
     }
 
-    private boolean boolCall(Expr.Call c, int i) {
+    private byte boolCall(Expr.Call c, int i) {
         return switch (c.name()) {
             // CROSSOVER: above now AND not above one bar ago — the read of
             // i-1 is why the registry charged crossovers one extra warm-up
             // bar at compile time. At i == 0 there is no previous bar: false.
-            case "CROSSOVER" -> i > 0
-                    && num(c.args().get(0), i) > num(c.args().get(1), i)
-                    && num(c.args().get(0), i - 1) <= num(c.args().get(1), i - 1);
-            case "CROSSUNDER" -> i > 0
-                    && num(c.args().get(0), i) < num(c.args().get(1), i)
-                    && num(c.args().get(0), i - 1) >= num(c.args().get(1), i - 1);
+            case "CROSSOVER", "CROSSUNDER" -> {
+                if (i <= 0) {
+                    yield FALSE;
+                }
+                double a = num(c.args().get(0), i);
+                double b = num(c.args().get(1), i);
+                double pa = num(c.args().get(0), i - 1);
+                double pb = num(c.args().get(1), i - 1);
+                if (!Double.isFinite(a) || !Double.isFinite(b)
+                        || !Double.isFinite(pa) || !Double.isFinite(pb)) {
+                    yield UNKNOWN;
+                }
+                boolean crossed = c.name().equals("CROSSOVER")
+                        ? a > b && pa <= pb
+                        : a < b && pa >= pb;
+                yield crossed ? TRUE : FALSE;
+            }
             default -> throw compilerBug(c);
         };
     }
@@ -108,6 +188,17 @@ public final class Interpreter {
             case Expr.Lookback l -> {
                 int j = i - l.offset();
                 yield j < 0 ? Double.NaN : num(l.target(), j);
+            }
+            // A bigger timeframe: already lined up per candle by the bank,
+            // using only bigger candles that had closed (see Resampler).
+            case Expr.On o -> {
+                double[] values = bank.get(IndicatorBank.instanceFor(o).key());
+                if (values == null) {
+                    throw new IllegalStateException("indicator missing from bank: "
+                            + IndicatorBank.instanceFor(o).key()
+                            + " — manifest and rules disagree?");
+                }
+                yield values[i];
             }
             case Expr.Unary u when u.op() == Expr.UnaryOp.NEG ->
                     -num(u.operand(), i);
@@ -143,31 +234,59 @@ public final class Interpreter {
 
     // ── Let caching ─────────────────────────────────────────────────────
 
-    private double letNum(String name, int i) {
-        touchBar(i);
-        Double cached = numCache.get(name);
-        if (cached != null) {
-            return cached;
+    /**
+     * A let's values at its most recent bars: bar {@code b} lives in slot
+     * {@code b % size}, and {@code bar[slot]} says which bar is really
+     * there. Everything read at one bar lies within {@code size}
+     * consecutive bars, so those reads never evict each other; the engine
+     * walks forward, so last bar's values are still there for this one.
+     * Random access (the debugger) stays correct — a slot holding another
+     * bar is simply a miss.
+     */
+    private static final class Ring {
+        final int[] bar;
+        final double[] value;
+
+        Ring(int size) {
+            bar = new int[size];
+            value = new double[size];
+            Arrays.fill(bar, -1);
         }
+    }
+
+    private Ring ring(String name) {
+        Ring r = rings.get(name);
+        if (r == null) {
+            long wanted = history.getOrDefault(name, 0) + 1L;
+            r = new Ring((int) Math.max(1, Math.min(wanted, series.size())));
+            rings.put(name, r);
+        }
+        return r;
+    }
+
+    private double letNum(String name, int i) {
+        Ring r = ring(name);
+        int slot = i % r.bar.length;
+        if (r.bar[slot] == i) {
+            return r.value[slot];
+        }
+        // A let only reads lets declared above it, so working this one out
+        // never writes to its own ring.
         double value = num(letValue(name), i);
-        // Evaluating the body may have moved the cache to an EARLIER bar (a
-        // let that reads another let through a lookback, e.g. m[1]). Re-anchor
-        // before storing, or bar i's value would be filed under bar i-1 and
-        // a later read of name[1] would get the wrong bar.
-        touchBar(i);
-        numCache.put(name, value);
+        r.bar[slot] = i;
+        r.value[slot] = value;
         return value;
     }
 
-    private boolean letBool(String name, int i) {
-        touchBar(i);
-        Boolean cached = boolCache.get(name);
-        if (cached != null) {
-            return cached;
+    private byte letBool(String name, int i) {
+        Ring r = ring(name);
+        int slot = i % r.bar.length;
+        if (r.bar[slot] == i) {
+            return (byte) r.value[slot];
         }
-        boolean value = bool(letValue(name), i);
-        touchBar(i); // same re-anchoring as letNum
-        boolCache.put(name, value);
+        byte value = tri(letValue(name), i);
+        r.bar[slot] = i;
+        r.value[slot] = value;
         return value;
     }
 
@@ -178,16 +297,6 @@ public final class Interpreter {
                     + "' survived the analyzer");
         }
         return let.value();
-    }
-
-    /** Caches are per-bar; sequential walks (the engine) hit them, random
-     *  access (the debugger, later) stays correct — just uncached. */
-    private void touchBar(int i) {
-        if (i != cachedBar) {
-            cachedBar = i;
-            numCache.clear();
-            boolCache.clear();
-        }
     }
 
     /** Whether a let holds a condition or a number — resolved structurally,

@@ -25,6 +25,14 @@ public class PasswordPolicy {
 
     public static final int MIN_LENGTH = 10;
     public static final int MAX_LENGTH = 200;
+    /** BCrypt's input limit. */
+    public static final int MAX_BYTES = 72;
+
+    /** True when BCrypt can't take this password whole. */
+    public static boolean tooLongForBcrypt(String password) {
+        return password != null
+                && password.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_BYTES;
+    }
 
     private static final Set<String> COMMON = Set.of(
             "password", "password1", "password123", "passw0rd", "letmein",
@@ -45,11 +53,12 @@ public class PasswordPolicy {
                             + "more than symbols — a short phrase of ordinary words "
                             + "beats Pa$$w0rd.");
         }
-        // Upper bound only to stop a megabyte of text reaching BCrypt, which
-        // is deliberately slow. Note BCrypt itself silently ignores anything
-        // past 72 bytes, which is why the floor matters more than the ceiling.
-        if (password.length() > MAX_LENGTH) {
-            throw AuthException.weakPassword("That password is too long.");
+        // BCrypt only uses the first 72 BYTES, and current Spring Security
+        // refuses longer input outright (a 500 before this check). 72 bytes
+        // is 72 plain letters, fewer with accents or emoji.
+        if (password.length() > MAX_LENGTH || tooLongForBcrypt(password)) {
+            throw AuthException.weakPassword("That password is too long: keep it to "
+                    + MAX_BYTES + " characters (fewer if it has emoji or accents).");
         }
 
         String lower = password.toLowerCase(Locale.ROOT);

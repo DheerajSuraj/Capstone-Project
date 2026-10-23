@@ -147,12 +147,16 @@ public class AuthController {
     }
 
     private ResponseCookie clearedCookie() {
-        return ResponseCookie.from(COOKIE_NAME, "")
+        ResponseCookie.ResponseCookieBuilder b = ResponseCookie.from(COOKIE_NAME, "")
                 .httpOnly(true)
                 .sameSite("Lax")
                 .secure(props.cookieSecure())
                 .path(COOKIE_PATH)
-                .maxAge(Duration.ZERO)
-                .build();
+                .maxAge(Duration.ZERO);
+        // Same domain as when it was set, or the browser keeps the old one.
+        if (props.cookieDomain() != null && !props.cookieDomain().isBlank()) {
+            b.domain(props.cookieDomain());
+        }
+        return b.build();
     }
 }

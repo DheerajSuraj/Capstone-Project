@@ -44,7 +44,7 @@ public class TokenService {
     private static final Logger log = LoggerFactory.getLogger(TokenService.class);
 
     private static final String ISSUER = "tsb";
-    private static final String PENDING_TYPE = "pending-google";
+    public static final String PENDING_TYPE = "pending-google";
 
     private final JwtEncoder encoder;
     private final JwtDecoder decoder;
@@ -106,7 +106,7 @@ public class TokenService {
      * there is no way to tell which from here, so the session ends. This is
      * the reuse-detection rule from the OAuth 2.0 browser-based-apps BCP.
      */
-    @Transactional
+    @Transactional(noRollbackFor = AuthException.class)
     public IssuedRefresh rotate(String rawToken) {
         String hash = sha256(rawToken);
         RefreshToken stored = refreshTokens.findByTokenHash(hash)
@@ -115,18 +115,52 @@ public class TokenService {
         Instant now = Instant.now();
 
         if (stored.getUsedAt() != null) {
+            if (stored.getUsedAt().isAfter(now.minus(REUSE_GRACE))) {
+                // Spent a moment ago: two tabs refreshing at once with the
+                // same cookie, not a thief. The other tab has the new token;
+                // this one just retries with the cookie it now has.
+                throw AuthException.unauthenticated();
+            }
             log.warn("Refresh token reuse detected for user {} — revoking family {}",
                     stored.getUserId(), stored.getFamilyId());
+            // Committed even though the request fails (noRollbackFor):
+            // rolled back, the revocation never happened.
             refreshTokens.revokeFamily(stored.getFamilyId(), now);
             throw AuthException.unauthenticated();
         }
         if (!stored.isUsable(now)) {
             throw AuthException.unauthenticated();
         }
-
-        stored.markUsed();
-        refreshTokens.save(stored);
+        Instant started = refreshTokens.familyStartedAt(stored.getFamilyId());
+        if (started != null && started.isBefore(now.minus(MAX_SESSION))) {
+            // Every rotation renews the 30 days, so without a cap a stolen
+            // cookie used now and then would last forever.
+            refreshTokens.revokeFamily(stored.getFamilyId(), now);
+            throw AuthException.unauthenticated();
+        }
+        if (refreshTokens.spend(stored.getId(), now) == 0) {
+            throw AuthException.unauthenticated(); // another request won the race
+        }
         return mint(stored.getUserId(), stored.getFamilyId());
+    }
+
+    /** How recently a token may have been spent and still count as a
+     *  harmless race between tabs rather than reuse. */
+    static final java.time.Duration REUSE_GRACE = java.time.Duration.ofSeconds(30);
+    /** Longest a sign-in lasts, however often it is refreshed. */
+    static final java.time.Duration MAX_SESSION = java.time.Duration.ofDays(60);
+
+    /** Once a day, deletes the sign-ins whose last token expired over a
+     *  week ago (a sign-in still in use keeps all its rows: see
+     *  {@link RefreshTokenRepository#deleteExpiredBefore}). */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelayString = "PT24H",
+            initialDelayString = "PT10M")
+    @Transactional
+    public void deleteExpired() {
+        int n = refreshTokens.deleteExpiredBefore(Instant.now().minus(java.time.Duration.ofDays(7)));
+        if (n > 0) {
+            log.info("deleted {} expired refresh tokens", n);
+        }
     }
 
     /** Reads the owner of a refresh token without spending it. */
@@ -189,8 +223,16 @@ public class TokenService {
                 .subject(identity.subject())
                 .claim("typ", PENDING_TYPE)
                 .claim("email", identity.email())
-                .claim("name", identity.displayName())
-                .claim("picture", identity.avatarUrl())
+                // Google doesn't promise a name or a picture, and the claim
+                // builder rejects nulls (that was a 500 on sign-up).
+                .claims(c -> {
+                    if (identity.displayName() != null) {
+                        c.put("name", identity.displayName());
+                    }
+                    if (identity.avatarUrl() != null) {
+                        c.put("picture", identity.avatarUrl());
+                    }
+                })
                 .build();
         return encoder.encode(JwtEncoderParameters.from(HS256, claims)).getTokenValue();
     }

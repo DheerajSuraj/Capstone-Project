@@ -1,0 +1,286 @@
+/* ── Backtest chart: which candles to look at ──────────────────────────
+   The strategy's own timeframe is labelled "· rules"; the others only
+   change the view. Amber tint for the one on screen, as for Blocks/Code. */
+.tsb-tf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.tsb-tf__label {
+  color: var(--muted);
+  font-size: 12px;
+  margin-right: 2px;
+}
+
+.tsb-tf button.tsb-tf__btn {
+  padding: 3px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.tsb-tf button.tsb-tf__btn.is-on {
+  background: rgba(232, 180, 76, 0.14);
+}
+
+.tsb-tf__own {
+  color: var(--muted);
+}
+
+.tsb-tf__status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tsb-tf__note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tsb-tf__note--warn {
+  margin: 0 0 8px;
+  color: var(--accent);
+}
+
+/* ── Cash usage (after TradAO) ─────────────────────────────────────────
+   Blue net asset value, the cash line in teal that turns orange and then
+   red under the warning and danger levels — TradAO's own encoding, which
+   is about running out of cash, not profit or loss. */
+.tsb-cash {
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 12px 12px 8px;
+}
+
+.tsb-cash__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tsb-cash__title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.tsb-cash__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tsb-cash__legend i {
+  display: inline-block;
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-right: 5px;
+}
+
+.tsb-cash__legend i.is-dotted,
+.tsb-cash__legend i.is-dashed {
+  height: 0;
+  border-top: 2px dotted;
+  border-radius: 0;
+  background: none;
+}
+
+.tsb-cash__legend i.is-dashed {
+  border-top-style: dashed;
+}
+
+.tsb-cash__gear {
+  white-space: nowrap;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.tsb-cash__levels {
+  margin: 10px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  display: grid;
+  gap: 8px;
+}
+
+.tsb-cash__levels label {
+  display: grid;
+  grid-template-columns: minmax(0, 210px) minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 10px;
+  font-family: inherit;
+  font-size: 12.5px;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* The trade list scrolls inside itself on a phone, not the whole page. */
+.tsb-tablewrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.tsb-cash__levels input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.tsb-cash__levels b {
+  font-family: var(--mono);
+  text-align: right;
+}
+
+.tsb-cash__note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tsb-cash__read {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tsb-cash__cash.is-ok { color: #3fb6a8; }
+.tsb-cash__cash.is-warning { color: #e8a33c; }
+.tsb-cash__cash.is-danger { color: #e5544b; }
+
+.tsb-cash__chart {
+  height: 240px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tsb-cash__hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .tsb-cash__levels label {
+    grid-template-columns: minmax(0, 1fr) 48px;
+  }
+  .tsb-cash__levels label span {
+    grid-column: 1 / -1;
+  }
+  .tsb-cash__chart {
+    height: 200px;
+  }
+}
+
+/* ── TradAO's measures, by category ───────────────────────────────────── */
+.tsb-measures {
+  margin: 16px 0;
+}
+
+.tsb-measures__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-bottom: 8px;
+}
+
+.tsb-measures__title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.tsb-measures__sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tsb-measures__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .tsb-measures__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .tsb-measures__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.tsb-measures__cat {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.tsb-measures__cat h4 {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tsb-measures__cat p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.tsb-measures__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 2px 0;
+}
+
+.tsb-measures__row span:first-child {
+  color: var(--muted);
+}
+
+.tsb-measures__row b {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tsb-chartnote {
+  margin: 8px 0 0;
+  color: var(--accent);
+  font-size: 12px;
+}

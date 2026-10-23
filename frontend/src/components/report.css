@@ -1,0 +1,587 @@
+/* ── Report by period ───────────────────────────────────────────────────
+   The run from the top down: all time → year → month → week → day.
+   Amber is what you can click; green and red only mean profit and loss,
+   as everywhere else in TSB. */
+.tsb-report {
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 12px 12px 14px;
+}
+
+.tsb-report button {
+  margin: 0;
+}
+
+.tsb-report__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-bottom: 8px;
+}
+
+.tsb-report__title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.tsb-report__sub,
+.tsb-report__hint,
+.tsb-report__muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tsb-report__hint {
+  margin: 6px 0 0;
+}
+
+/* Where you are, and the way back up */
+.tsb-report__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 2px 0 10px;
+}
+
+.tsb-report__crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-family: var(--display);
+  font-size: 15px;
+}
+
+.tsb-report__crumb b {
+  font-weight: 600;
+}
+
+.tsb-report__sep {
+  color: var(--muted);
+  margin: 0 8px;
+}
+
+.tsb-report button.tsb-report__link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  letter-spacing: normal;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tsb-report button.tsb-report__link:hover {
+  background: none;
+  text-decoration: underline;
+}
+
+/* One period's numbers */
+.tsb-report__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(112px, 100%), 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tsb-report__stat {
+  background: var(--panel-2);
+  padding: 9px 12px;
+}
+
+.tsb-report__stat .k {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.tsb-report__stat .v {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tsb-report__note {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.tsb-report__block {
+  margin-top: 16px;
+}
+
+.tsb-report__h {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* The periods below */
+.tsb-report__table th,
+.tsb-report__table td {
+  white-space: nowrap;
+}
+
+.tsb-report__row {
+  cursor: pointer;
+}
+
+.tsb-report__row:hover td {
+  background: rgba(232, 180, 76, 0.05);
+}
+
+.tsb-report__cover {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tsb-report__barcell {
+  width: 96px;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.tsb-report__bar-track {
+  position: relative;
+  display: block;
+  height: 8px;
+}
+
+.tsb-report__bar-track::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--line);
+}
+
+.tsb-report__bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+.tsb-report__bar-fill.is-up {
+  background: var(--up);
+  border-radius: 0 3px 3px 0;
+}
+
+.tsb-report__bar-fill.is-down {
+  background: var(--down);
+  border-radius: 3px 0 0 3px;
+}
+
+/* Every month of every year */
+.tsb-report__grid {
+  width: auto;
+  border-collapse: separate;
+  border-spacing: 3px;
+}
+
+.tsb-report__grid th,
+.tsb-report__grid td {
+  border: none;
+  padding: 0;
+}
+
+.tsb-report__grid thead th {
+  text-align: center;
+  padding: 0 2px 2px;
+}
+
+.tsb-report__grid th[scope='row'] {
+  padding-right: 8px;
+  text-align: right;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: normal;
+}
+
+.tsb-report button.tsb-report__cell,
+.tsb-report button.tsb-report__day {
+  border: none;
+  border-radius: 4px;
+  background-color: var(--panel-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+.tsb-report button.tsb-report__cell {
+  width: 100%;
+  min-width: 60px;
+  padding: 7px 4px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.tsb-report button.tsb-report__cell.is-total {
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.tsb-report button.tsb-report__cell:hover,
+.tsb-report button.tsb-report__day:hover {
+  background-color: var(--panel-2);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* A month as a calendar */
+.tsb-report__cal {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 3px;
+  max-width: 680px;
+}
+
+.tsb-report__calhead {
+  padding: 0 0 2px;
+  text-align: center;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tsb-report button.tsb-report__day {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-height: 54px;
+  padding: 5px 7px;
+  text-align: left;
+}
+
+.tsb-report__day.is-empty {
+  min-height: 54px;
+}
+
+.tsb-report__daynum {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.tsb-report__dayret {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.tsb-report__daytr {
+  font-size: 10.5px;
+  opacity: 0.8;
+}
+
+/* Best and worst: one card per level, the best and the worst in it */
+.tsb-report__picks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
+  gap: 8px;
+}
+
+.tsb-report__pick {
+  padding: 9px 11px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.tsb-report__pick-k {
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.tsb-report .tsb-report__pick-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-align: left;
+}
+
+.tsb-report button.tsb-report__pick-row {
+  cursor: pointer;
+}
+
+.tsb-report button.tsb-report__pick-row:hover {
+  background: none;
+}
+
+.tsb-report button.tsb-report__pick-row:hover .tsb-report__pick-n {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.tsb-report__pick-l {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.tsb-report__pick-n {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tsb-report__pick-v {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* When it makes money */
+.tsb-report__whenhead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.tsb-report__whenhead .tsb-report__h {
+  margin: 0;
+}
+
+.tsb-report__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tsb-report__tabs button {
+  padding: 4px 11px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tsb-report__tabs button:hover {
+  background: rgba(232, 180, 76, 0.07);
+  color: var(--text);
+}
+
+.tsb-report__tabs button.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tsb-report__cols {
+  position: relative;
+  display: grid;
+  height: 190px;
+  margin: 14px 0 26px;
+}
+
+/* Bars and their labels sit inside this box, inset from the top and the
+   bottom, so the label on the tallest bar always has room. */
+.tsb-report__plot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 18px;
+  bottom: 18px;
+}
+
+.tsb-report__zero {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--line);
+}
+
+.tsb-report__col {
+  position: relative;
+  height: 100%;
+  border-radius: 4px;
+  outline: none;
+}
+
+.tsb-report__col.is-hover {
+  background: rgba(232, 180, 76, 0.06);
+}
+
+.tsb-report__col:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.tsb-report__colbar {
+  position: absolute;
+  left: 50%;
+  width: min(24px, 64%);
+  transform: translateX(-50%);
+}
+
+.tsb-report__colbar.is-up {
+  background: var(--up);
+  border-radius: 4px 4px 0 0;
+}
+
+.tsb-report__colbar.is-down {
+  background: var(--down);
+  border-radius: 0 0 4px 4px;
+}
+
+.tsb-report__col.is-hover .tsb-report__colbar {
+  filter: brightness(1.15);
+}
+
+.tsb-report__collabel {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 0;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tsb-report__colx {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  padding-top: 6px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.tsb-report__tip {
+  position: absolute;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0f1216;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tsb-report__tip b {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.tsb-report__tip b span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.tsb-report__tipname {
+  color: var(--text);
+}
+
+.tsb-report__verdict {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.tsb-report__verdict b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.tsb-report .tsb-report__toggle {
+  margin: 0 0 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+/* The way down to the report, from the measures above the chart */
+button.tsb-measures__jump {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+button.tsb-measures__jump:hover {
+  background: none;
+  text-decoration: underline;
+}
+
+@media (max-width: 560px) {
+  .tsb-report {
+    padding: 12px 10px;
+  }
+  .tsb-report__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .tsb-report__stat {
+    padding: 8px 9px;
+  }
+  .tsb-report__stat .v {
+    font-size: 14px;
+  }
+  .tsb-report button.tsb-report__day,
+  .tsb-report__day.is-empty {
+    min-height: 44px;
+    padding: 4px 5px;
+  }
+  .tsb-report__daytr {
+    display: none;
+  }
+  .tsb-report__colx.is-skip-sm {
+    visibility: hidden;
+  }
+  .tsb-report__cols {
+    height: 160px;
+  }
+}

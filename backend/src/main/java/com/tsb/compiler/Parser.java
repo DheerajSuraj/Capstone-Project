@@ -101,6 +101,7 @@ public final class Parser {
         // member parses inside its own try so one broken member cannot take
         // down its siblings — this is where multi-error reporting comes from.
         while (!peek().is(TokenType.RBRACE) && !peek().is(TokenType.EOF)) {
+            int before = pos;
             try {
                 if (peek().is(TokenType.LET)) {
                     lets.add(letDecl());
@@ -108,6 +109,14 @@ public final class Parser {
                     rules.add(ruleDecl());
                 } else if (peek().is(TokenType.IDENT)) {
                     config.add(configEntry());
+                } else if (peek().is(TokenType.IF)) {
+                    // The most common first mistake: an IF written straight
+                    // into the strategy. Say so, then parse the statement
+                    // anyway (and drop it) so its own parts aren't reported
+                    // as a string of confusing follow-on errors.
+                    error("PAR009", "an IF statement must be inside a rule, like:  "
+                            + "rule entry { IF ... THEN ... }", peek().span());
+                    ifStmt();
                 } else {
                     error("PAR002", "expected a config entry, 'let', or 'rule' here, found "
                             + describe(peek()), peek().span());
@@ -115,6 +124,13 @@ public final class Parser {
                 }
             } catch (ParseError recoverable) {
                 synchronize();
+            }
+            // Recovery must always move forward. Without this, a member
+            // that fails ON a landmark token (one synchronize() stops at)
+            // would be retried forever, adding the same error each time
+            // until memory runs out.
+            if (pos == before) {
+                advance();
             }
         }
 
@@ -130,6 +146,11 @@ public final class Parser {
         Token key = advance(); // known IDENT from the dispatch above
         expect(TokenType.ASSIGN, "PAR001",
                 "expected '=' after config key '" + key.lexeme() + "'");
+        if (isLandmark(peek().type()) || peek().is(TokenType.EOF)) {
+            error("PAR002", "config '" + key.lexeme() + "' needs a value after '='"
+                    + example(key.lexeme()), peek().span());
+            throw new ParseError();
+        }
         Expr value = expression(0);
         return new StrategyAst.ConfigEntry(key.lexeme(), value,
                 key.span().merge(value.span()));
@@ -280,6 +301,23 @@ public final class Parser {
      * pending right power 8, so the loop closes {@code (1-2)} first.
      */
     Expr expression(int minPower) {
+        if (depth == 0) {
+            length = 0; // a new top-level expression
+        }
+        if (depth >= MAX_DEPTH) {
+            error("PAR011", "this expression is nested too deeply — split it "
+                    + "into smaller lets", peek().span());
+            throw new ParseError();
+        }
+        depth++;
+        try {
+            return expressionBody(minPower);
+        } finally {
+            depth--;
+        }
+    }
+
+    private Expr expressionBody(int minPower) {
         Expr lhs = prefix();
 
         while (true) {
@@ -288,7 +326,21 @@ public final class Parser {
             // Postfix lookback: tightest of all (power 13).
             if (op.is(TokenType.LBRACKET) && 13 >= minPower) {
                 advance();
+                grow(op.span());
                 lhs = lookbackSuffix(lhs);
+                continue;
+            }
+
+            // Postfix ON (power 12): just looser than a lookback, tighter
+            // than everything else. EMA(CLOSE, 50)[1] ON 4h puts the
+            // lookback on the 4h series; EMA(CLOSE, 50) ON 4h > CLOSE
+            // compares the 4h value.
+            if (op.is(TokenType.ON) && 12 >= minPower) {
+                advance();
+                grow(op.span());
+                Token tf = expect(TokenType.TIMEFRAME, "PAR010",
+                        "expected a timeframe after ON, e.g. ON 4h or ON 1d");
+                lhs = new Expr.On(lhs, tf.stringValue(), lhs.span().merge(tf.span()));
                 continue;
             }
 
@@ -297,6 +349,7 @@ public final class Parser {
                 break; // next operator too weak to grab lhs — done here
             }
             advance();
+            grow(op.span());
             Expr rhs = expression(leftPower + 1); // +1 => left-associative
             lhs = new Expr.Binary(binaryOp(op.type()), lhs, rhs,
                     lhs.span().merge(rhs.span()));
@@ -346,6 +399,13 @@ public final class Parser {
             default -> {
                 error("PAR002", "expected an expression here, found " + describe(t),
                         t.span());
+                // Leave a landmark (let / rule / IF / '}') where it is, so
+                // recovery resumes AT it instead of skipping the construct
+                // it starts: "capital =" followed by a rule must not lose
+                // the rule.
+                if (isLandmark(t.type())) {
+                    pos--;
+                }
                 throw new ParseError();
             }
         };
@@ -428,13 +488,30 @@ public final class Parser {
      */
     private void synchronize() {
         while (!peek().is(TokenType.EOF)) {
-            switch (peek().type()) {
-                case LET, RULE, IF, RBRACE -> {
-                    return;
-                }
-                default -> advance();
+            if (isLandmark(peek().type())) {
+                return;
             }
+            advance();
         }
+    }
+
+    /** Tokens recovery resumes at: member starters, statement starter, '}'. */
+    private static boolean isLandmark(TokenType t) {
+        return switch (t) {
+            case LET, RULE, IF, RBRACE -> true;
+            default -> false;
+        };
+    }
+
+    /** ", e.g. capital = 10000" — for a config key written with no value. */
+    private static String example(String key) {
+        return switch (key) {
+            case "symbol" -> ", e.g. symbol = BTCUSDT";
+            case "timeframe" -> ", e.g. timeframe = 1h";
+            case "capital" -> ", e.g. capital = 10000";
+            case "fee" -> ", e.g. fee = 0.1%";
+            default -> "";
+        };
     }
 
     private Token peek() {
@@ -476,6 +553,40 @@ public final class Parser {
     }
 
     private void error(String code, String message, Span span) {
-        diagnostics.add(Diagnostic.error(code, message, span));
+        // A cap, so no input can make a compile build an unbounded list.
+        if (diagnostics.size() < MAX_ERRORS) {
+            diagnostics.add(Diagnostic.error(code, message, span));
+        } else if (diagnostics.size() == MAX_ERRORS) {
+            diagnostics.add(Diagnostic.error("PAR099",
+                    "too many errors — fix the ones above first", span));
+        }
+    }
+
+    static final int MAX_ERRORS = 50;
+
+    /**
+     * Deepest an expression may nest, and most operators one expression may
+     * chain. Every later pass (analyzer, interpreter, debugger) walks the
+     * tree recursively, so these bound their stack too: without them 5,000
+     * '(' or 10,000 '+' in a 64 KB source overflowed the stack (HTTP 500).
+     * Real conditions stay far below both.
+     */
+    static final int MAX_DEPTH = 100;
+    /** Kept below the analyzer's MAX_NESTING (450), which counts how deep
+     *  evaluation recurses through lets: a long chain like
+     *  {@code a + b + c + ...} nests one level per operator. */
+    static final int MAX_LENGTH = 400;
+
+    /** Current expression() recursion depth. */
+    private int depth;
+    /** Operators chained in the current top-level expression. */
+    private int length;
+
+    private void grow(Span at) {
+        if (++length > MAX_LENGTH) {
+            error("PAR011", "this expression is too long — split it into "
+                    + "smaller lets", at);
+            throw new ParseError();
+        }
     }
 }

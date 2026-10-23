@@ -26,11 +26,13 @@ const MIN_ORDER = 5
  */
 export default function TradePanel({
   symbol,
-  livePrice,
+  livePrice: chartPrice,
   account,
   onAccount,
   signedIn,
   onSignIn,
+  loadError,
+  onRetry,
 }: {
   symbol: string
   livePrice: number | null
@@ -38,7 +40,16 @@ export default function TradePanel({
   onAccount: (a: PaperAccountDto) => void
   signedIn: boolean
   onSignIn: () => void
+  /** Why the account could not be loaded, if it could not. */
+  loadError?: string | null
+  onRetry?: () => void
 }) {
+  // The chart's live tick when there is one; otherwise the price the server
+  // last had (the chart's feed can drop — orders always fill at the
+  // server's price anyway).
+  const serverPrice = account?.prices[symbol] ?? null
+  const livePrice = chartPrice ?? serverPrice
+  const priceIsLive = chartPrice != null
   const base = BASE[symbol] ?? symbol.replace('USDT', '')
   const [side, setSide] = useState<PaperSide>('BUY')
   const [type, setType] = useState<PaperType>('MARKET')
@@ -61,7 +72,13 @@ export default function TradePanel({
   // Is this order going against the position (i.e. closing it)?
   const against = !!position && (position.side === 'LONG') !== buy
 
-  const refPrice = type === 'LIMIT' ? Number(limit) || null : livePrice
+  // A limit order already at or through the market fills straight away at
+  // the market price, as the server does it — so estimate it there.
+  const limitNum = Number(limit) || null
+  const marketable =
+    type === 'LIMIT' && limitNum != null && livePrice != null &&
+    (buy ? limitNum >= livePrice : limitNum <= livePrice)
+  const refPrice = type === 'LIMIT' && !marketable ? limitNum : livePrice
   const amountNum = Number(amount) || 0
 
   // What this order would be, rounded the way the exchange rounds it.
@@ -71,8 +88,13 @@ export default function TradePanel({
     const raw = unit === 'BASE' ? amountNum : amountNum / (refPrice * (1 + FEE))
     const units = Math.floor(raw / step + 1e-9) * step
     const value = units * refPrice
-    return { units, value, fee: value * FEE, tooSmall: value < MIN_ORDER }
-  }, [refPrice, amountNum, unit, side, step])
+    // The minimum is for opening: closing (part of) a position is always
+    // allowed, and an order that flips sides is checked on the new side only.
+    const closing = against && position ? Math.min(units, position.qty) : 0
+    const opening = units - closing
+    const tooSmall = units <= 0 || (opening > 1e-12 && opening * refPrice < MIN_ORDER)
+    return { units, value, fee: value * FEE, tooSmall, flips: closing > 0 && opening > 1e-12 }
+  }, [refPrice, amountNum, unit, step, against, position])
 
   // Against a position, % means "of the position" (100% closes it);
   // otherwise it means "of your buying power".
@@ -133,6 +155,26 @@ export default function TradePanel({
     } catch (e) {
       setMessage({ kind: 'err', text: e instanceof Error ? e.message : String(e) })
     }
+  }
+
+  if (signedIn && !account) {
+    return (
+      <aside className="tsb-pt tsb-pt--ticket">
+        <div className="tsb-pt__eyebrow">Paper trading</div>
+        {loadError ? (
+          <>
+            <p className="tsb-pt__warn">Your paper account could not be loaded: {loadError}</p>
+            {onRetry && (
+              <button type="button" className="tsb-pt__cta" onClick={onRetry}>
+                Try again
+              </button>
+            )}
+          </>
+        ) : (
+          <p className="tsb-pt__muted">Loading your paper account…</p>
+        )}
+      </aside>
+    )
   }
 
   if (!signedIn) {
@@ -209,8 +251,8 @@ export default function TradePanel({
       <label className="tsb-pt__field">
         <span>Price</span>
         {type === 'MARKET' ? (
-          <div className="tsb-pt__static">
-            {price(livePrice)} <em>live</em>
+          <div className="tsb-pt__static" title={priceIsLive ? undefined : 'The chart\'s live feed is not connected; this is the last price the server had.'}>
+            {price(livePrice)} <em>{priceIsLive ? 'live' : 'server price'}</em>
           </div>
         ) : (
           <input
@@ -259,10 +301,17 @@ export default function TradePanel({
             {estimate.units > 0 && (
               <div className="tsb-pt__effect">{orderEffect(position, buy, estimate.units, base)}</div>
             )}
+            {marketable && (
+              <div className="tsb-pt__effect">
+                This limit is already at or past the market price, so it fills straight away
+                at the market price.
+              </div>
+            )}
             {estimate.tooSmall && (
               <div className="tsb-pt__warn">
-                Minimum order is {MIN_ORDER} USDT. {base} is traded in steps of {step} {base}, so
-                this rounds down to {usd(estimate.value)} USDT — try a little more.
+                {estimate.flips
+                  ? `The part that opens the new position must be worth at least ${MIN_ORDER} USDT — close the position exactly, or flip by a little more.`
+                  : `Minimum order is ${MIN_ORDER} USDT. ${base} is traded in steps of ${step} ${base}, so this rounds down to ${usd(estimate.value)} USDT — try a little more.`}
               </div>
             )}
           </>

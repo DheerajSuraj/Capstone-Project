@@ -1,0 +1,22 @@
+// SuperTrend Follower: the SuperTrend line sits under price in an uptrend
+// and above it in a downtrend. Hold while price is above the line.
+strategy "SuperTrend Follower" {
+    symbol = BTCUSDT
+    timeframe = 4h
+    capital = 10000
+    fee = 0.1%
+
+    let st = SUPERTREND(10, 3)
+
+    rule entry {
+        IF CROSSOVER(CLOSE, st) AND CLOSE > EMA(CLOSE, 100) THEN BUY ALL
+    }
+
+    rule exit {
+        IF CROSSUNDER(CLOSE, st) THEN SELL ALL
+    }
+
+    rule protect {
+        IF CLOSE > 0 THEN SET STOPLOSS = 10%
+    }
+}

@@ -26,6 +26,11 @@ class BacktesterTest {
     // ── Fixtures ────────────────────────────────────────────────────────
 
     private static CompiledStrategy compile(String configExtra, String rules) {
+        // Fee-free unless the test sets one: the language's default is 0.1%,
+        // but these scenarios check fills, and round numbers keep them
+        // checkable by hand.
+        String config = configExtra.contains("fee") ? configExtra
+                : "fee = 0%\n" + configExtra;
         String source = """
                 strategy "T" {
                     symbol = BTCUSDT
@@ -34,7 +39,7 @@ class BacktesterTest {
                     %s
                     %s
                 }
-                """.formatted(configExtra, rules);
+                """.formatted(config, rules);
         Lexer.LexResult lexed = new Lexer(source).scan();
         Parser.ParseResult parsed = new Parser(lexed.tokens()).parse();
         Analyzer.AnalysisResult analyzed =
@@ -216,6 +221,151 @@ class BacktesterTest {
             assertEquals(Trade.ExitReason.STOPLOSS,
                     result.trades().get(0).exitReason(),
                     "unknowable intrabar order -> assume the worse outcome");
+        }
+    }
+
+    // ── Honest fills ────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("honest fills")
+    class HonestFills {
+
+        private static final String STOP_5 = """
+                rule entry { IF CLOSE > 15 THEN BUY ALL }
+                rule protect { IF CLOSE > 0 THEN SET STOPLOSS = 5% }
+                """;
+
+        @Test
+        @DisplayName("a stop the candle opens below fills at the OPEN, not at the stop")
+        void gappedStopFillsAtOpen() {
+            // Entry bar 2 at 100 -> stop 95. Bar 3 OPENS at 80: nobody could
+            // have sold at 95. (The old engine recorded 95.)
+            CompiledStrategy s = compile("", STOP_5);
+            BacktestResult result = run(s, series(
+                    new double[]{10, 10, 100, 80, 81},
+                    new double[]{10, 20, 101, 82, 81},
+                    new double[]{10, 10, 99, 78, 81},
+                    new double[]{10, 20, 100, 81, 81}));
+
+            Trade trade = result.trades().get(0);
+            assertEquals(Trade.ExitReason.STOPLOSS, trade.exitReason());
+            assertEquals(80.0, trade.exitPrice(), 1e-9);
+        }
+
+        @Test
+        @DisplayName("a stop reached inside the candle still fills at the stop")
+        void stopInsideCandleFillsAtLevel() {
+            CompiledStrategy s = compile("", STOP_5);
+            BacktestResult result = run(s, series(
+                    new double[]{10, 10, 100, 97, 97},
+                    new double[]{10, 20, 101, 98, 97},
+                    new double[]{10, 10, 99, 90, 97},
+                    new double[]{10, 20, 100, 96, 97}));
+            assertEquals(95.0, result.trades().get(0).exitPrice(), 1e-9);
+        }
+
+        @Test
+        @DisplayName("a take-profit the candle opens above fills at the higher open")
+        void gappedTakeProfitFillsAtOpen() {
+            CompiledStrategy s = compile("", """
+                    rule entry { IF CLOSE > 15 THEN BUY ALL }
+                    rule protect { IF CLOSE > 0 THEN SET TAKEPROFIT = 10% }
+                    """);
+            // Entry 100 -> target 110. Bar 3 opens at 115.
+            BacktestResult result = run(s, series(
+                    new double[]{10, 10, 100, 115, 115},
+                    new double[]{10, 20, 101, 116, 115},
+                    new double[]{10, 10, 99, 114, 115},
+                    new double[]{10, 20, 100, 115, 115}));
+            Trade trade = result.trades().get(0);
+            assertEquals(Trade.ExitReason.TAKEPROFIT, trade.exitReason());
+            assertEquals(115.0, trade.exitPrice(), 1e-9);
+        }
+
+        @Test
+        @DisplayName("a trailing stop does not use the same candle's high (it may have come after the low)")
+        void trailingIgnoresSameCandleHigh() {
+            CompiledStrategy s = compile("", """
+                    rule entry { IF CLOSE > 15 THEN BUY ALL }
+                    rule protect { IF CLOSE > 0 THEN SET TRAILING = 5% }
+                    """);
+            // Entry bar 2 at 100. Bar 3: high 120, low 99. Trailing from the
+            // high would say "sold at 114" — but if the low came first, the
+            // price never stood at 114 after a 120 peak. Trailing from the
+            // earlier peak (100) puts the level at 95, untouched.
+            BacktestResult result = run(s, series(
+                    new double[]{10, 10, 100, 100, 118},
+                    new double[]{10, 20, 100, 120, 119},
+                    new double[]{10, 10, 100, 99, 115},
+                    new double[]{10, 20, 100, 110, 116}));
+
+            Trade trade = result.trades().get(0);
+            // Bar 4 trails bar 3's high: level 120 x 0.95 = 114, not reached
+            // by bar 4 (low 115), so the trade runs to the end of the data.
+            assertEquals(Trade.ExitReason.END_OF_DATA, trade.exitReason());
+        }
+
+        @Test
+        @DisplayName("the next candle trails the new high")
+        void trailingUsesEarlierHighs() {
+            CompiledStrategy s = compile("", """
+                    rule entry { IF CLOSE > 15 THEN BUY ALL }
+                    rule protect { IF CLOSE > 0 THEN SET TRAILING = 5% }
+                    """);
+            // Bar 3 makes the high 120. Bar 4 opens 116 (above 114), dips to
+            // 113: the trailing stop at 114 fills.
+            BacktestResult result = run(s, series(
+                    new double[]{10, 10, 100, 100, 116, 113},
+                    new double[]{10, 20, 100, 120, 117, 113},
+                    new double[]{10, 10, 100, 99, 113, 113},
+                    new double[]{10, 20, 100, 110, 113, 113}));
+
+            Trade trade = result.trades().get(0);
+            assertEquals(Trade.ExitReason.TRAILING, trade.exitReason());
+            assertEquals(114.0, trade.exitPrice(), 1e-9);
+            assertEquals(4, trade.exitBar());
+        }
+
+        @Test
+        @DisplayName("with a stop-loss and a higher trailing stop, the price meets the trailing stop first")
+        void higherStopFillsFirst() {
+            CompiledStrategy s = compile("", """
+                    rule entry { IF CLOSE > 15 THEN BUY ALL }
+                    rule a { IF CLOSE > 0 THEN SET STOPLOSS = 10% }
+                    rule b { IF CLOSE > 0 THEN SET TRAILING = 5% }
+                    """);
+            // Entry 100: stop 90. Bar 3 peaks at 110 -> trailing 104.5 for
+            // bar 4, which falls to 85: on the way down it passes 104.5 first.
+            BacktestResult result = run(s, series(
+                    new double[]{10, 10, 100, 105, 106, 85},
+                    new double[]{10, 20, 100, 110, 106, 85},
+                    new double[]{10, 10, 100, 105, 85, 85},
+                    new double[]{10, 20, 100, 106, 86, 85}));
+
+            Trade trade = result.trades().get(0);
+            assertEquals(Trade.ExitReason.TRAILING, trade.exitReason());
+            assertEquals(104.5, trade.exitPrice(), 1e-9);
+        }
+
+        @Test
+        @DisplayName("a strategy without 'fee' pays the 0.1% default")
+        void defaultFee() {
+            String source = """
+                    strategy "T" {
+                        symbol = BTCUSDT
+                        timeframe = 1h
+                        capital = 1000
+                        rule r { IF CLOSE > 15 THEN BUY ALL }
+                    }
+                    """;
+            CompiledStrategy s = new Analyzer(new Parser(new Lexer(source).scan()
+                    .tokens()).parse().strategy().orElseThrow()).analyze()
+                    .strategy().orElseThrow();
+            assertEquals(0.001, s.feePercent(), 1e-15);
+            BacktestResult result = run(s, tightSeries(
+                    new double[]{10, 10, 10, 10},
+                    new double[]{10, 20, 10, 10}));
+            assertTrue(result.trades().get(0).fees() > 0, "fees were charged");
         }
     }
 

@@ -11,6 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -86,6 +87,20 @@ class CandleRepositoryIT {
         assertEquals(2, s.size());          // bars at +1h and +2h; +3h excluded
         assertEquals(110, s.close()[0]);
         assertEquals(115, s.close()[1]);
+    }
+
+    @Test
+    @DisplayName("loadLatest keeps the NEWEST bars, still in time order")
+    void latestKeepsNewest() {
+        Instant t0 = Instant.parse("2026-01-01T00:00:00Z");
+        CandleSeries s = repository.loadLatest(symbolId, "1h",
+                t0, t0.plusSeconds(4 * 3600), 2);
+        assertEquals(2, s.size());
+        assertEquals(115, s.close()[0]);    // +2h
+        assertEquals(120, s.close()[1]);    // +3h, the newest
+        assertTrue(s.openTimeMillis()[0] < s.openTimeMillis()[1]);
+        assertEquals(Optional.of(t0.plusSeconds(10800)),
+                repository.latestOpenTime(symbolId, "1h"));
     }
 
     @Test

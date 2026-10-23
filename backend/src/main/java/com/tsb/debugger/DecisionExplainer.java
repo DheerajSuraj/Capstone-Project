@@ -4,23 +4,32 @@ import com.tsb.compiler.AstPrinter;
 import com.tsb.compiler.CompiledStrategy;
 import com.tsb.compiler.Expr;
 import com.tsb.compiler.StrategyAst;
+import com.tsb.compiler.Timeframe;
 import com.tsb.execution.BacktestResult;
 import com.tsb.execution.Backtester;
+import com.tsb.execution.Benchmark;
 import com.tsb.execution.BarObserver;
 import com.tsb.execution.ExchangeRules;
 import com.tsb.execution.IndicatorBank;
 import com.tsb.execution.Interpreter;
+import com.tsb.execution.Trade;
 import com.tsb.marketdata.CandleSeries;
 
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.math.MathContext;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Module 3, the decision debugger: "why did (or didn't) it trade at this
@@ -54,6 +63,9 @@ public final class DecisionExplainer {
     private final CompiledStrategy strategy;
     private final CandleSeries series;
     private final Interpreter interp;
+    /** The interpreter's indicator arrays — also says which bigger candle
+     *  each small candle could see, for {@code ... ON 4h}. */
+    private final Map<String, double[]> bank;
     private final Map<String, StrategyAst.LetDecl> lets = new HashMap<>();
     private final RunRecorder recorder;
     private final BacktestResult result;
@@ -71,8 +83,8 @@ public final class DecisionExplainer {
         this.result = new Backtester().run(strategy, series, rules, recorder);
         // Our own interpreter over the same bank: random access by bar is
         // correct (its let cache re-anchors per bar), just uncached.
-        this.interp = new Interpreter(strategy.lets(), series,
-                IndicatorBank.compute(strategy.indicators(), series));
+        this.bank = IndicatorBank.compute(strategy, series);
+        this.interp = new Interpreter(strategy, series, bank);
         for (StrategyAst.LetDecl let : strategy.lets()) {
             lets.put(let.name(), let);
         }
@@ -151,10 +163,118 @@ public final class DecisionExplainer {
             }
         }
 
+        double close = series.close()[bar];
+        Double change = bar > 0 && series.close()[bar - 1] != 0
+                ? (close / series.close()[bar - 1] - 1) * 100 : null;
         return new Explanation.Bar(bar, series.openTimeMillis()[bar],
                 series.open()[bar], series.high()[bar], series.low()[bar],
-                series.close()[bar], strategy.warmupBars(), warmup, lastBar,
-                inPosition, List.copyOf(statements), summary.toString());
+                close, strategy.warmupBars(), warmup, lastBar,
+                inPosition, List.copyOf(statements), summary.toString(),
+                series.volume()[bar], change, book(bar), fills(bar));
+    }
+
+    // ── The account at one close ────────────────────────────────────────
+
+    /**
+     * Cash, coins and net asset value at this close, straight from the run's
+     * own curves, plus what the open position and the protective orders
+     * looked like. Nothing here is re-simulated.
+     */
+    Explanation.Book book(int bar) {
+        double[] equity = result.equityCurve();
+        double nav = equity[bar];
+        double cash = result.cashCurve()[bar];
+        double qty = result.positionCurve()[bar];
+        double close = series.close()[bar];
+        double value = qty * close;
+
+        Trade open = null;   // the position held at this close, if any
+        double realized = 0;
+        int closed = 0;
+        for (Trade t : result.trades()) {
+            if (t.exitBar() <= bar) {
+                realized += t.pnl();
+                closed++;
+            } else if (qty > 0 && t.entryBar() <= bar) {
+                open = t;
+            }
+        }
+        double peak = 0;
+        for (int i = 0; i <= bar; i++) {
+            peak = Math.max(peak, equity[i]);
+        }
+
+        Double entry = open == null ? null : open.entryPrice();
+        Double stop = null;
+        Double target = null;
+        Double trail = null;
+        if (entry != null && recorder.evaluated(bar)) {
+            double s = recorder.stopPct(bar);
+            double tp = recorder.takeProfitPct(bar);
+            double tr = recorder.trailingPct(bar);
+            stop = s > 0 ? entry * (1 - s / 100) : null;
+            target = tp > 0 ? entry * (1 + tp / 100) : null;
+            trail = tr > 0 ? recorder.peakSinceEntry(bar) * (1 - tr / 100) : null;
+        }
+        double capital = result.initialCapital();
+        return new Explanation.Book(capital, nav, cash, qty, value,
+                nav > 0 ? value / nav * 100 : 0,
+                entry, open == null ? null : open.entryTime().toEpochMilli(),
+                entry == null ? null : qty * (close - entry),
+                entry == null || entry == 0 ? null : (close / entry - 1) * 100,
+                peak, peak > 0 ? (peak - nav) / peak * 100 : 0,
+                (nav / capital - 1) * 100,
+                Benchmark.returnPctAt(series, strategy.warmupBars(), strategy.feePercent(), bar),
+                realized, closed, stop, target, trail);
+    }
+
+    /**
+     * Every buy and sell during this candle, in the order they happened:
+     * orders from the last close fill at the open (sells first, as the engine
+     * runs them), then a stop or target inside the candle, then — on the last
+     * candle — the position valued out at the close.
+     */
+    List<Explanation.Fill> fills(int bar) {
+        double fee = strategy.feePercent();
+        double open = series.open()[bar];
+        List<Explanation.Fill> atOpen = new ArrayList<>();
+        List<Explanation.Fill> buys = new ArrayList<>();
+        List<Explanation.Fill> later = new ArrayList<>();
+        double bought = 0;
+        double boughtAt = 0;
+        for (Trade t : result.trades()) {
+            if (t.entryBar() == bar) {
+                // A position sold in parts is several trades with one entry.
+                bought += t.qty();
+                boughtAt = t.entryPrice();
+            }
+            if (t.exitBar() != bar) {
+                continue;
+            }
+            Explanation.Fill f = new Explanation.Fill("SELL",
+                    switch (t.exitReason()) {
+                        case SIGNAL -> "OPEN";
+                        case END_OF_DATA -> "CLOSE";
+                        default -> t.exitPrice() == open ? "OPEN" : "INSIDE";
+                    },
+                    t.exitPrice(), t.qty(), t.qty() * t.exitPrice() * fee,
+                    t.exitReason().name(), t.pnl());
+            if (t.exitReason() == Trade.ExitReason.SIGNAL) {
+                atOpen.add(f);
+            } else {
+                later.add(f);
+            }
+        }
+        if (bought > 0) {
+            buys.add(new Explanation.Fill("BUY", "OPEN", boughtAt, bought,
+                    bought * boughtAt * fee, "SIGNAL", null));
+        }
+        List<Explanation.Fill> all = new ArrayList<>(atOpen);
+        all.addAll(buys);
+        // A stop on the very candle the position opened comes after the buy.
+        later.sort(java.util.Comparator.comparing(f -> f.when().equals("CLOSE")));
+        all.addAll(later);
+        return List.copyOf(all);
     }
 
     private Explanation.Statement explainStatement(int r, int k, int bar,
@@ -164,9 +284,10 @@ public final class DecisionExplainer {
         StrategyAst.IfStmt stmt = rule.body().get(k);
         ConditionNode condition = explainCondition(stmt.condition(), bar);
 
+        // As in the engine: ELSE only on a definite false, never on no answer.
         Explanation.Branch taken = condition.passed()
                 ? Explanation.Branch.THEN
-                : stmt.elseAction().isPresent()
+                : !condition.unknown() && stmt.elseAction().isPresent()
                         ? Explanation.Branch.ELSE
                         : Explanation.Branch.NONE;
         StrategyAst.Action action = switch (taken) {
@@ -197,6 +318,7 @@ public final class DecisionExplainer {
                 case IGNORED_ALREADY_LONG -> Explanation.Outcome.IGNORED_ALREADY_LONG;
                 case IGNORED_NOTHING_TO_SELL -> Explanation.Outcome.IGNORED_NOTHING_TO_SELL;
                 case REJECTED_TOO_SMALL -> Explanation.Outcome.REJECTED_TOO_SMALL;
+                case REJECTED_NOT_ENOUGH_CASH -> Explanation.Outcome.REJECTED_NOT_ENOUGH_CASH;
             };
             if (outcome == Explanation.Outcome.FILLED) {
                 fillPrice = series.open()[bar + 1];
@@ -233,32 +355,85 @@ public final class DecisionExplainer {
         }
     }
 
+    /** Lets already drawn in full in the tree being built: a let used
+     *  twice is drawn once, so {@code let b = a AND a, c = b AND b, ...}
+     *  cannot blow the tree (and the response) up exponentially. */
+    private final Set<String> shownLets = new HashSet<>();
+
     /** Evaluates every part of {@code e} at {@code bar}, without stopping
      *  early. */
     public ConditionNode explainCondition(Expr e, int bar) {
+        shownLets.clear();
+        treeDepth = 0;
+        return node(e, bar);
+    }
+
+    /**
+     * How deep the drawn tree may go before a named condition is shown by
+     * its answer alone. A chain of lets can nest hundreds of levels (each
+     * adds two), and a reply that deep is more than the JSON writer will
+     * nest; one expression on its own nests at most 100 (the parser's limit).
+     */
+    static final int MAX_TREE_DEPTH = 100;
+    private int treeDepth;
+
+    private ConditionNode node(Expr e, int bar) {
+        treeDepth++;
+        try {
+            return nodeAt(e, bar);
+        } finally {
+            treeDepth--;
+        }
+    }
+
+    private ConditionNode nodeAt(Expr e, int bar) {
         return switch (e) {
             case Expr.Binary b when b.op() == Expr.BinaryOp.AND
                     || b.op() == Expr.BinaryOp.OR -> junction(b, bar);
             case Expr.Binary b -> compare(b, bar);
             case Expr.Unary u when u.op() == Expr.UnaryOp.NOT -> {
-                ConditionNode child = explainCondition(u.operand(), bar);
-                boolean passed = interp.bool(e, bar);
+                ConditionNode child = node(u.operand(), bar);
+                byte answer = interp.tri(e, bar);
+                boolean passed = answer == Interpreter.TRUE;
+                boolean unknown = answer == Interpreter.UNKNOWN;
                 yield new ConditionNode(ConditionNode.Kind.NOT, text(e), e.span(),
-                        passed, !passed && child.unknown(), null, null, null,
+                        passed, unknown, null, null, null,
                         null, null, null, null,
-                        passed ? "The inner condition was false, so NOT made it true."
+                        unknown ? "The inner condition had no answer on this candle "
+                                + "(missing data), so NOT has none either: not true."
+                                : passed ? "The inner condition was false, so NOT made it true."
                                 : "The inner condition was true, so NOT made it false.",
                         List.of(child));
             }
             case Expr.Call c when c.name().equals("CROSSOVER") -> cross(c, bar, true);
             case Expr.Call c when c.name().equals("CROSSUNDER") -> cross(c, bar, false);
             case Expr.VarRef v -> {
-                ConditionNode body = explainCondition(lets.get(v.name()).value(), bar);
-                boolean passed = interp.bool(e, bar);
+                byte answer = interp.tri(e, bar);
+                boolean passed = answer == Interpreter.TRUE;
+                boolean unknown = answer == Interpreter.UNKNOWN;
+                String said = unknown ? "had no answer yet (missing data)."
+                        : passed ? "true." : "false.";
+                if (treeDepth > MAX_TREE_DEPTH) {
+                    yield new ConditionNode(ConditionNode.Kind.LET, v.name(), e.span(),
+                            passed, unknown, null, null, null, null, null,
+                            null, null, "Named condition '" + v.name() + "' was "
+                            + said + " It builds on too many other named conditions "
+                            + "to draw all of its parts here.",
+                            List.of());
+                }
+                if (!shownLets.add(v.name())) {
+                    // Drawn in full where it first appears; just the answer here.
+                    yield new ConditionNode(ConditionNode.Kind.LET, v.name(), e.span(),
+                            passed, unknown, null, null, null, null, null,
+                            null, null, "Named condition '" + v.name() + "' was "
+                            + said + " Its parts are shown where it first appears.",
+                            List.of());
+                }
+                ConditionNode body = node(lets.get(v.name()).value(), bar);
                 yield new ConditionNode(ConditionNode.Kind.LET, v.name(), e.span(),
-                        passed, body.unknown(), null, null, null, null, null,
+                        passed, unknown, null, null, null, null, null,
                         null, null, "Named condition '" + v.name() + "' was "
-                        + (passed ? "true." : "false."), List.of(body));
+                        + said, List.of(body));
             }
             default -> throw new IllegalStateException(
                     "not a condition — the analyzer should have rejected: " + text(e));
@@ -270,16 +445,15 @@ public final class DecisionExplainer {
         flatten(b, b.op(), parts);
         List<ConditionNode> children = new ArrayList<>(parts.size());
         int trueCount = 0;
-        boolean anyUnknown = false;
         for (Expr part : parts) {
-            ConditionNode child = explainCondition(part, bar);
+            ConditionNode child = node(part, bar);
             children.add(child);
             if (child.passed()) {
                 trueCount++;
             }
-            anyUnknown |= child.unknown();
         }
-        boolean passed = interp.bool(b, bar);
+        byte answer = interp.tri(b, bar);
+        boolean passed = answer == Interpreter.TRUE;
         boolean and = b.op() == Expr.BinaryOp.AND;
         int n = parts.size();
         String note;
@@ -291,7 +465,7 @@ public final class DecisionExplainer {
                     : "None of the " + n + " parts were true.";
         }
         return new ConditionNode(and ? ConditionNode.Kind.AND : ConditionNode.Kind.OR,
-                text(b), b.span(), passed, !passed && anyUnknown, null, null,
+                text(b), b.span(), passed, answer == Interpreter.UNKNOWN, null, null,
                 null, null, null, null, null, note, List.copyOf(children));
     }
 
@@ -309,7 +483,9 @@ public final class DecisionExplainer {
         double l = interp.num(b.left(), bar);
         double r = interp.num(b.right(), bar);
         boolean passed = interp.bool(b, bar);
-        boolean unknown = Double.isNaN(l) || Double.isNaN(r);
+        // Same rule as the engine: NaN (no data yet) and Infinity (divided
+        // by zero) cannot be compared, and a distance to them means nothing.
+        boolean unknown = !Double.isFinite(l) || !Double.isFinite(r);
         String op = symbol(b.op());
 
         Double distance = null;
@@ -323,7 +499,12 @@ public final class DecisionExplainer {
         if (!withNotes) {
             note = null;
         } else if (unknown) {
-            note = undefinedNote(Double.isNaN(l) ? leftText : text(b.right()));
+            boolean leftBad = !Double.isFinite(l);
+            double bad = leftBad ? l : r;
+            String which = leftBad ? leftText : text(b.right());
+            note = Double.isNaN(bad) ? undefinedNote(which)
+                    : which + " divided by zero on this candle (no sensible value), "
+                    + "so this cannot be true.";
         } else {
             double d = distance;
             String rightText = b.right() instanceof Expr.NumberLit
@@ -337,7 +518,99 @@ public final class DecisionExplainer {
         }
         return new ConditionNode(ConditionNode.Kind.COMPARE, text(b), b.span(),
                 passed, unknown, finite(l), finite(r), op, null, null,
-                distance, relative, note, List.of());
+                distance, relative, note, List.of(),
+                withNotes ? timeframeNote(bar, b.left(), b.right()) : null);
+    }
+
+    // ── Bigger timeframes ───────────────────────────────────────────────
+
+    private static final DateTimeFormatter DAY_TIME =
+            DateTimeFormatter.ofPattern("d MMM HH:mm", Locale.ENGLISH).withZone(ZoneOffset.UTC);
+    private static final DateTimeFormatter TIME =
+            DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH).withZone(ZoneOffset.UTC);
+
+    /**
+     * For a leaf that reads {@code ... ON 4h}: which finished 4h candle its
+     * value came from at this bar — so the reader can check that it is never
+     * the 4h candle still forming. Null when the leaf reads no bigger
+     * timeframe.
+     */
+    private String timeframeNote(int bar, Expr... sides) {
+        List<Expr.On> ons = new ArrayList<>();
+        for (Expr side : sides) {
+            collectOns(side, ons);
+        }
+        if (ons.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        Set<String> seen = new LinkedHashSet<>();
+        for (Expr.On o : ons) {
+            if (!seen.add(o.timeframe())) {
+                continue; // one sentence per timeframe
+            }
+            double[] when = bank.get(IndicatorBank.visibleCandleKey(o.timeframe()));
+            double open = when == null || bar >= when.length ? Double.NaN : when[bar];
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            if (Double.isNaN(open)) {
+                sb.append("No ").append(o.timeframe())
+                        .append(" candle had finished yet at this candle.");
+            } else {
+                long from = (long) open;
+                long to = from + Timeframe.millis(o.timeframe()).orElse(0);
+                sb.append(o.timeframe()).append(" values come from the last finished ")
+                        .append(o.timeframe()).append(" candle (")
+                        .append(DAY_TIME.format(Instant.ofEpochMilli(from))).append("–")
+                        .append(TIME.format(Instant.ofEpochMilli(to)))
+                        .append(" UTC), never the one still forming.");
+            }
+        }
+        return sb.toString();
+    }
+
+    /** The {@code ON}s inside each let, worked out once per let: walking
+     *  through the lets afresh for every leaf took 2^n steps for
+     *  {@code let b = a + a, c = b + b, ...}. */
+    private final Map<String, List<Expr.On>> letOns = new HashMap<>();
+
+    /** Every {@code ON} inside an expression, looking through named values. */
+    private void collectOns(Expr e, List<Expr.On> out) {
+        switch (e) {
+            case Expr.On o -> out.add(o);
+            case Expr.Binary b -> {
+                collectOns(b.left(), out);
+                collectOns(b.right(), out);
+            }
+            case Expr.Unary u -> collectOns(u.operand(), out);
+            case Expr.Lookback l -> collectOns(l.target(), out);
+            case Expr.Call c -> c.args().forEach(a -> collectOns(a, out));
+            case Expr.VarRef v -> {
+                List<Expr.On> known = letOns.get(v.name());
+                if (known == null) {
+                    // Not computeIfAbsent: filling one entry fills others.
+                    known = new ArrayList<>();
+                    StrategyAst.LetDecl let = lets.get(v.name());
+                    if (let != null) {
+                        List<Expr.On> found = new ArrayList<>();
+                        collectOns(let.value(), found);
+                        // One per timeframe is all timeframeNote needs.
+                        Set<String> seen = new HashSet<>();
+                        for (Expr.On o : found) {
+                            if (seen.add(o.timeframe())) {
+                                known.add(o);
+                            }
+                        }
+                    }
+                    letOns.put(v.name(), known);
+                }
+                out.addAll(known);
+            }
+            default -> {
+                // literals and prices read no bigger timeframe
+            }
+        }
     }
 
     private static String marginText(Expr.BinaryOp op, double d, Double rel) {
@@ -353,8 +626,8 @@ public final class DecisionExplainer {
         double pl = bar > 0 ? interp.num(a, bar - 1) : Double.NaN;
         double pr = bar > 0 ? interp.num(b, bar - 1) : Double.NaN;
         boolean passed = interp.bool(c, bar);
-        boolean unknown = Double.isNaN(l) || Double.isNaN(r)
-                || Double.isNaN(pl) || Double.isNaN(pr);
+        boolean unknown = !Double.isFinite(l) || !Double.isFinite(r)
+                || !Double.isFinite(pl) || !Double.isFinite(pr);
 
         String an = text(a);
         String bn = text(b);
@@ -397,7 +670,8 @@ public final class DecisionExplainer {
         return new ConditionNode(over ? ConditionNode.Kind.CROSSOVER
                 : ConditionNode.Kind.CROSSUNDER, text(c), c.span(), passed, unknown,
                 finite(l), finite(r), null, finite(pl), finite(pr), distance,
-                relative, note, List.of());
+                relative, note, List.of(),
+                withNotes ? timeframeNote(bar, a, b) : null);
     }
 
     // ── Counterfactual: the single closest change ───────────────────────
@@ -459,7 +733,10 @@ public final class DecisionExplainer {
             case AND -> n.children().stream().allMatch(c -> structural(c, flipped));
             case OR -> n.children().stream().anyMatch(c -> structural(c, flipped));
             case NOT -> !structural(n.children().get(0), flipped);
-            case LET -> structural(n.children().get(0), flipped);
+            // A let drawn elsewhere (or too deep to draw) shows only its
+            // answer: no leaves of its own to flip.
+            case LET -> n.children().isEmpty() ? n.passed()
+                    : structural(n.children().get(0), flipped);
             case COMPARE, CROSSOVER, CROSSUNDER -> n.passed();
         };
     }
@@ -486,9 +763,12 @@ public final class DecisionExplainer {
                 ? " (condition false, so ELSE)" : "";
         return switch (outcome) {
             case WARMUP -> where + ": not checked (warm-up).";
-            case NO_ACTION -> where + ": no " + action + ", the condition was false."
+            case NO_ACTION -> cond.unknown()
+                    ? where + ": no action. Part of the condition had no value on this "
+                    + "candle, so it was neither true nor false (THEN needs true, ELSE "
+                    + "needs false)."
+                    : where + ": no " + action + ", the condition was false."
                     + (closest != null ? " " + closest.note()
-                    : cond.unknown() ? " Part of it was still undefined at this bar."
                     : " No single change would have been enough: " + cond.note());
             case FILLED -> where + ": " + action + because
                     + " at this close, filled at the next open (" + fmt(fillPrice) + ").";
@@ -500,6 +780,9 @@ public final class DecisionExplainer {
             case REJECTED_TOO_SMALL -> where + ": asked to " + action + because
                     + ", but the order was below the exchange's minimum size, so "
                     + "it was skipped.";
+            case REJECTED_NOT_ENOUGH_CASH -> where + ": asked to " + action + because
+                    + ", but that amount cost more than the cash available, so it "
+                    + "was refused (no buying on credit).";
             case NOT_FILLED_LAST_BAR -> where + ": asked to " + action + because
                     + ", but this is the last bar, so there is no next open to "
                     + "fill at.";

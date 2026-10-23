@@ -68,7 +68,7 @@ public class AuthService {
             // between the check above and this insert. The unique indexes
             // are what actually decide it; this just turns the loser's
             // constraint violation into something readable.
-            throw resolveConflict(cleanUser, cleanEmail);
+            throw resolveConflict(e);
         }
 
         return openSession(user);
@@ -79,25 +79,36 @@ public class AuthService {
     @Transactional
     public Session signIn(String identifier, String rawPassword) {
         String clean = identifier.trim();
-        rateLimiter.checkAllowed(clean);
+        // The attempt is counted BEFORE the slow check, so parallel guesses
+        // can't all slip past the limit.
+        rateLimiter.acquire(clean);
 
         User user = users.findByEmailOrUsername(clean).orElse(null);
+        // Username and email of one account share a second counter, so
+        // switching between them doesn't double the guesses.
+        String accountKey = user == null ? null : "account:" + user.getId();
+        if (accountKey != null) {
+            rateLimiter.acquire(accountKey);
+        }
 
         // Run the hash comparison even when no such user exists, against a
         // fixed dummy hash. Skipping it would make "unknown email" return
         // measurably faster than "wrong password", and that timing
-        // difference is enough to enumerate accounts.
-        String hash = (user != null && user.hasPassword())
+        // difference is enough to enumerate accounts. A password BCrypt
+        // can't take (over 72 bytes) can't be anyone's: spend the same time
+        // on the dummy and fail.
+        boolean tooLong = PasswordPolicy.tooLongForBcrypt(rawPassword);
+        String hash = (user != null && user.hasPassword() && !tooLong)
                 ? user.getPasswordHash()
                 : DUMMY_HASH;
-        boolean ok = passwords.matches(rawPassword, hash);
+        boolean ok = passwords.matches(tooLong ? "x" : rawPassword, hash);
 
-        if (user == null || !user.hasPassword() || !ok) {
-            rateLimiter.recordFailure(clean);
+        if (user == null || !user.hasPassword() || tooLong || !ok) {
             throw AuthException.invalidCredentials();
         }
 
         rateLimiter.recordSuccess(clean);
+        rateLimiter.recordSuccess(accountKey);
         return openSession(user);
     }
 
@@ -134,6 +145,11 @@ public class AuthService {
             if (existing.hasPassword()) {
                 throw AuthException.accountHasPassword();
             }
+            if (existing.getGoogleSub() != null && !existing.getGoogleSub().equals(id.subject())) {
+                // Same email, DIFFERENT Google account: the address changed
+                // hands. Never take the account over by email alone.
+                throw AuthException.googleAccountMismatch();
+            }
             // No password and no subject: an account that cannot currently
             // sign in at all. Adopting it is safe and is the only way its
             // strategies stay reachable.
@@ -168,7 +184,7 @@ public class AuthService {
         try {
             user = users.saveAndFlush(user);
         } catch (DataIntegrityViolationException e) {
-            throw resolveConflict(cleanUser, id.email());
+            throw resolveConflict(e);
         }
         return openSession(user);
     }
@@ -192,7 +208,10 @@ public class AuthService {
 
     /* --------------------------------------------------- session moves */
 
-    @Transactional
+    /** noRollbackFor: when a reused token gets its whole family revoked,
+     *  that revocation must be committed even though the request fails —
+     *  rolled back, it never happened and the thief kept the session. */
+    @Transactional(noRollbackFor = AuthException.class)
     public Session refresh(String rawRefreshToken) {
         if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
             throw AuthException.unauthenticated();
@@ -217,9 +236,18 @@ public class AuthService {
                 issued.rawToken());
     }
 
-    private AuthException resolveConflict(String username, String email) {
-        if (users.usernameTaken(username)) return AuthException.usernameTaken();
-        if (users.findByEmailIgnoringCase(email).isPresent()) return AuthException.emailTaken();
+    /**
+     * Which unique index refused the insert, read from the error itself.
+     * (Asking the database again doesn't work: after a failed statement
+     * Postgres refuses every further query in the same transaction, and the
+     * loser of a sign-up race got a 500 instead of "taken".)
+     */
+    private static AuthException resolveConflict(DataIntegrityViolationException e) {
+        Throwable cause = e.getMostSpecificCause();
+        String what = cause == null || cause.getMessage() == null ? ""
+                : cause.getMessage().toLowerCase(Locale.ROOT);
+        if (what.contains("email")) return AuthException.emailTaken();
+        if (what.contains("google_sub")) return AuthException.emailTaken();
         return AuthException.usernameTaken();
     }
 }

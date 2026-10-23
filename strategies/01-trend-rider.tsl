@@ -1,0 +1,25 @@
+// Trend Rider: join a trend when the fast average crosses above the slow one,
+// but only while price is above the 200 average (the "big trend" filter).
+// Idea: catch the big crypto moves, sit out the long bear phases.
+strategy "Trend Rider" {
+    symbol = BTCUSDT
+    timeframe = 4h
+    capital = 10000
+    fee = 0.1%
+
+    let fast = EMA(CLOSE, 20)
+    let slow = EMA(CLOSE, 50)
+    let trend = SMA(CLOSE, 200)
+
+    rule entry {
+        IF CROSSOVER(fast, slow) AND CLOSE > trend THEN BUY ALL
+    }
+
+    rule exit {
+        IF CROSSUNDER(fast, slow) THEN SELL ALL
+    }
+
+    rule protect {
+        IF CLOSE > 0 THEN SET STOPLOSS = 8%
+    }
+}

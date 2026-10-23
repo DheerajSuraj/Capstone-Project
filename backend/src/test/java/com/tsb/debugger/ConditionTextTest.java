@@ -55,4 +55,17 @@ class ConditionTextTest {
         roundTrips("NOT CLOSE > OPEN OR CROSSOVER(EMA(CLOSE, 9), EMA(CLOSE, 21))");
         roundTrips("(CLOSE - CLOSE[1]) / CLOSE[1] * 100 >= 2 AND VOLUME != 0");
     }
+
+    @Test
+    @DisplayName("bigger timeframes print and round-trip, lookbacks on the right side of ON")
+    void onTimeframes() {
+        assertEquals("EMA(CLOSE, 50) ON 4h > CLOSE",
+                ConditionText.print(condition("EMA(CLOSE, 50) ON 4h > CLOSE")));
+        assertEquals("(CLOSE ON 1d)[1] < CLOSE[1] ON 1d",
+                ConditionText.print(condition("(CLOSE ON 1d)[1] < CLOSE[1] ON 1d")));
+        roundTrips("EMA(CLOSE, 50) ON 4h > CLOSE AND CLOSE > CLOSE[1] ON 1d");
+        roundTrips("(EMA(CLOSE, 50) ON 4h)[1] < EMA(CLOSE, 50) ON 4h");
+        roundTrips("CROSSOVER(EMA(CLOSE, 9) ON 4h, EMA(CLOSE, 21) ON 4h)");
+        roundTrips("-CLOSE ON 1d < 0 - RSI(14) ON 1w");
+    }
 }

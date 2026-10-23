@@ -46,7 +46,7 @@ public class ForumRepository {
     }
 
     public record ImageData(byte[] bytes, String contentType, boolean postHidden,
-                            boolean postDeleted) {
+                            boolean postDeleted, long postAuthorId) {
     }
 
     public record CommentRow(long id, long userId, String author, String body,
@@ -105,7 +105,7 @@ public class ForumRepository {
      * @param includeHidden   moderators see hidden posts; everyone else does not
      */
     public List<PostRow> findPosts(String category, String query, boolean top, int limit,
-                                   int offset, long viewerId, boolean includeHidden) {
+                                   long offset, long viewerId, boolean includeHidden) {
         StringBuilder sql = new StringBuilder("SELECT ").append(POST_COLUMNS)
                 .append(" WHERE p.deleted_at IS NULL");
         List<Object> args = new ArrayList<>();
@@ -127,8 +127,10 @@ public class ForumRepository {
             args.add(like);
             args.add(like);
         }
-        sql.append(top ? " ORDER BY p.like_count DESC, p.created_at DESC"
-                : " ORDER BY p.created_at DESC");
+        // The id breaks ties: without it, posts made in the same instant
+        // could swap places between pages and show up twice under "load more".
+        sql.append(top ? " ORDER BY p.like_count DESC, p.created_at DESC, p.id DESC"
+                : " ORDER BY p.created_at DESC, p.id DESC");
         sql.append(" LIMIT ? OFFSET ?");
         args.add(limit);
         args.add(offset);
@@ -141,6 +143,31 @@ public class ForumRepository {
         return rows.stream().findFirst();
     }
 
+    /**
+     * Locks the post's row until the transaction ends. Likes, comments and
+     * reports take it first, so two people acting at once are counted one
+     * after the other — each recount then sees the other's row, and the
+     * counters cannot drift.
+     */
+    public void lockPost(long id) {
+        jdbc.query("SELECT id FROM forum_posts WHERE id = ? FOR UPDATE", rs -> {
+        }, id);
+    }
+
+    /** Lock-key space for one user's forum writes (any 64-bit value works;
+     *  this one is just unlikely to meet another advisory lock). */
+    private static final long USER_LOCK_BASE = 0x7473_6266_0000_0000L; // "tsbf"
+
+    /**
+     * Holds a per-user lock until the transaction ends, so "posted fewer than
+     * 10 times this hour" and the insert that follows happen as one step: two
+     * requests sent together can no longer both pass the check.
+     */
+    public void lockUser(long userId) {
+        jdbc.query("SELECT pg_advisory_xact_lock(?)", rs -> {
+        }, USER_LOCK_BASE + userId);
+    }
+
     public void softDeletePost(long id) {
         jdbc.update("UPDATE forum_posts SET deleted_at = NOW() WHERE id = ?", id);
     }
@@ -148,6 +175,12 @@ public class ForumRepository {
     public void setHidden(long id, boolean hidden, String reason) {
         jdbc.update("UPDATE forum_posts SET hidden = ?, hidden_reason = ? WHERE id = ?",
                 hidden, hidden ? reason : null, id);
+        if (!hidden) {
+            // A moderator looked and restored it: the reports so far are
+            // answered, and only new ones count toward hiding it again.
+            jdbc.update("UPDATE forum_reports SET reviewed = TRUE WHERE post_id = ?", id);
+            jdbc.update("UPDATE forum_posts SET report_count = 0 WHERE id = ?", id);
+        }
     }
 
     public int postsSince(long userId, Instant since) {
@@ -173,10 +206,12 @@ public class ForumRepository {
 
     public Optional<ImageData> image(long id) {
         return jdbc.query("""
-                SELECT i.bytes, i.content_type, p.hidden, p.deleted_at IS NOT NULL AS deleted
+                SELECT i.bytes, i.content_type, p.hidden, p.deleted_at IS NOT NULL AS deleted,
+                       p.user_id
                 FROM forum_images i JOIN forum_posts p ON p.id = i.post_id WHERE i.id = ?
                 """, (rs, n) -> new ImageData(rs.getBytes("bytes"), rs.getString("content_type"),
-                rs.getBoolean("hidden"), rs.getBoolean("deleted")), id).stream().findFirst();
+                rs.getBoolean("hidden"), rs.getBoolean("deleted"), rs.getLong("user_id")), id)
+                .stream().findFirst();
     }
 
     // ── Comments ────────────────────────────────────────────────────────
@@ -243,18 +278,22 @@ public class ForumRepository {
 
     /**
      * Records a report (once per person). When {@value #AUTO_HIDE_REPORTS}
-     * different people have reported a post it is hidden until a moderator
-     * looks at it. Returns false if this person had already reported it.
+     * different people have reported a post since a moderator last looked,
+     * it is hidden until a moderator looks at it again — but only if there
+     * are moderators: with none configured, nobody could ever restore it,
+     * so reports are just counted. Returns false if this person had already
+     * reported it.
      */
-    public boolean report(long postId, long userId, String reason) {
+    public boolean report(long postId, long userId, String reason, boolean autoHide) {
         int added = jdbc.update("""
                 INSERT INTO forum_reports (post_id, user_id, reason) VALUES (?, ?, ?)
                 ON CONFLICT (post_id, user_id) DO NOTHING
                 """, postId, userId, reason);
-        int count = jdbc.queryForObject("SELECT COUNT(*) FROM forum_reports WHERE post_id = ?",
+        int count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM forum_reports WHERE post_id = ? AND NOT reviewed",
                 Integer.class, postId);
         jdbc.update("UPDATE forum_posts SET report_count = ? WHERE id = ?", count, postId);
-        if (count >= AUTO_HIDE_REPORTS) {
+        if (autoHide && count >= AUTO_HIDE_REPORTS) {
             jdbc.update("""
                     UPDATE forum_posts SET hidden = TRUE,
                       hidden_reason = 'Hidden after ' || ?::text || ' reports, waiting for a moderator.'

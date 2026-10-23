@@ -156,11 +156,6 @@ export default function SignIn({
             placeholder="Enter your password"
             autoComplete="current-password"
             disabled={busy || locked}
-            trailing={
-              <a className="tsb-auth__link--quiet" href="/forgot-password">
-                Forgot password?
-              </a>
-            }
           />
 
           <button

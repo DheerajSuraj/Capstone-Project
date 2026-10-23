@@ -52,17 +52,55 @@ public record CompiledStrategy(
      * "computed exactly once" rule from §5.4 of the addendum enforced by
      * the type system.
      *
-     * @param name      registry name (RSI, SMA, ...)
+     * @param name      registry name (RSI, SMA, ...), or {@link #PRICE} for a
+     *                  plain price read on a bigger timeframe ({@code CLOSE ON 1d})
      * @param source    the price series argument, or null for indicators
      *                  that fix their own inputs (RSI, ATR, VWAP, MACD)
      * @param constArgs the constant arguments in declaration order
+     * @param timeframe null for the strategy's own candles; otherwise the
+     *                  bigger timeframe of {@code ... ON 4h}
+     * @param offset    with a timeframe: how many BIGGER candles back
+     *                  ({@code CLOSE[1] ON 1d} = 1); always 0 without one
      */
     public record IndicatorInstance(
             String name,
             Expr.PriceField source,
-            List<Double> constArgs
+            List<Double> constArgs,
+            String timeframe,
+            int offset
     ) {
-        /** Stable cache/display key, e.g. {@code SMA(CLOSE,200)}. */
+        /** The name used for {@code CLOSE ON 1d}: a price, not an indicator. */
+        public static final String PRICE = "PRICE";
+
+        public IndicatorInstance {
+            if (offset < 0 || (timeframe == null && offset != 0)) {
+                throw new IllegalArgumentException("offset " + offset
+                        + " needs a bigger timeframe and must be >= 0");
+            }
+        }
+
+        /** An indicator on the strategy's own candles. */
+        public IndicatorInstance(String name, Expr.PriceField source,
+                                 List<Double> constArgs) {
+            this(name, source, constArgs, null, 0);
+        }
+
+        /** The same indicator, computed on bigger candles. */
+        public IndicatorInstance on(String biggerTimeframe, int biggerOffset) {
+            return new IndicatorInstance(name, source, constArgs, biggerTimeframe,
+                    biggerOffset);
+        }
+
+        /** This indicator on the strategy's own candles. */
+        public IndicatorInstance onOwnCandles() {
+            return new IndicatorInstance(name, source, constArgs);
+        }
+
+        /**
+         * Stable cache/display key: {@code SMA(CLOSE,200)}; on a bigger
+         * timeframe {@code EMA(CLOSE,50)@4h}, {@code PRICE(CLOSE)[1]@1d}.
+         * Own-candle keys are unchanged, so nothing that stored one breaks.
+         */
         public String key() {
             StringBuilder sb = new StringBuilder(name).append('(');
             boolean first = true;
@@ -78,7 +116,14 @@ public record CompiledStrategy(
                         : String.valueOf(a));
                 first = false;
             }
-            return sb.append(')').toString();
+            sb.append(')');
+            if (timeframe != null) {
+                if (offset > 0) {
+                    sb.append('[').append(offset).append(']');
+                }
+                sb.append('@').append(timeframe);
+            }
+            return sb.toString();
         }
     }
 }

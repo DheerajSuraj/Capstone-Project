@@ -1,0 +1,171 @@
+/* Strategy lab. Green/red only on returns (profit/loss); amber marks what
+   is selected; everything else is grey. */
+.tsb-lab h3 {
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0 0 2px;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.tsb-lab__how {
+  margin: 0 0 16px;
+  padding-left: 20px;
+  color: var(--muted);
+  display: grid;
+  gap: 4px;
+}
+.tsb-lab__how b {
+  color: var(--text);
+}
+
+.tsb-lab__pick {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+}
+
+/* The global label style (mono, uppercase) must not leak into cards. */
+label.tsb-lab__card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: 'box name' 'box tag' 'box blurb';
+  column-gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+}
+label.tsb-lab__card.is-on {
+  border-color: var(--accent-dim);
+}
+.tsb-lab__card input {
+  grid-area: box;
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+.tsb-lab__card-name {
+  grid-area: name;
+  font-weight: 600;
+}
+.tsb-lab__tag {
+  grid-area: tag;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.tsb-lab__blurb {
+  grid-area: blurb;
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 4px;
+}
+
+.tsb-lab__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+.tsb-lab__coins {
+  display: flex;
+  gap: 6px;
+}
+.tsb-lab__coins button.is-on {
+  background: rgba(232, 180, 76, 0.14);
+  border-color: var(--accent-dim);
+}
+.tsb-lab__unseen {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tsb-lab__progress {
+  position: relative;
+  margin-top: 14px;
+  height: 22px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.tsb-lab__progress > div {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(232, 180, 76, 0.22);
+  transition: width 0.3s ease;
+}
+.tsb-lab__progress > span {
+  position: relative;
+  display: block;
+  padding: 0 10px;
+  line-height: 20px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.tsb-lab__result-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.tsb-lab__summary {
+  margin: 0;
+  color: var(--muted);
+}
+.tsb-lab__scroll {
+  overflow-x: auto;
+}
+.tsb-lab__table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 640px;
+}
+.tsb-lab__muted,
+.tsb-lab .is-muted {
+  color: var(--muted);
+}
+.tsb-lab__err {
+  color: var(--muted);
+  font-style: italic;
+}
+.tsb-lab__badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.tsb-lab__next p {
+  margin: 0;
+  color: var(--muted);
+}
+.tsb-lab__next b {
+  color: var(--text);
+}
+.tsb-lab__result-head button {
+  white-space: nowrap;
+  flex: none;
+}

@@ -32,6 +32,8 @@ import java.util.List;
  * @param relativeDistance {@code distance} as a fraction of the larger side's size
  * @param note             one plain sentence about this node
  * @param children         operands of AND / OR / NOT, or the body of a named condition
+ * @param timeframeNote    leaves that read a bigger timeframe ({@code ... ON 4h}):
+ *                         which finished bigger candle the value came from; else null
  */
 public record ConditionNode(
         Kind kind,
@@ -47,8 +49,19 @@ public record ConditionNode(
         Double distance,
         Double relativeDistance,
         String note,
-        List<ConditionNode> children
+        List<ConditionNode> children,
+        String timeframeNote
 ) {
+
+    /** A node that reads no bigger timeframe. */
+    public ConditionNode(Kind kind, String text, Span span, boolean passed,
+                         boolean unknown, Double left, Double right, String op,
+                         Double previousLeft, Double previousRight, Double distance,
+                         Double relativeDistance, String note,
+                         List<ConditionNode> children) {
+        this(kind, text, span, passed, unknown, left, right, op, previousLeft,
+                previousRight, distance, relativeDistance, note, children, null);
+    }
 
     public enum Kind {
         /** {@code a > b} and friends. A leaf. */

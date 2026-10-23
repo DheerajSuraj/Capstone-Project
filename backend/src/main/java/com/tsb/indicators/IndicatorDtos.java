@@ -1,6 +1,7 @@
 package com.tsb.indicators;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Size;
@@ -60,11 +61,19 @@ public final class IndicatorDtos {
      * @param source price field for the PRICE_SERIES parameter, or null
      * @param args  the CONST_NUMBER arguments in declaration order
      */
+    /**
+     * One line to draw. {@code timeframe} (optional) draws it from bigger
+     * candles, e.g. a 4h EMA on a 1h chart, the way a strategy's
+     * {@code EMA(CLOSE, 50) ON 4h} sees it; {@code offset} is a lookback in
+     * those bigger candles.
+     */
     public record SpecRequest(
             @NotBlank @Size(max = 80) String id,
             @NotBlank @Size(max = 40) String name,
             @Size(max = 10) String source,
-            List<Double> args) {
+            @Size(max = 4) List<Double> args,
+            @Size(max = 5) String timeframe,
+            Integer offset) {
     }
 
     public record ComputeRequest(
@@ -72,7 +81,9 @@ public final class IndicatorDtos {
             @NotBlank @Size(max = 5) String timeframe,
             String from,
             String to,
-            @NotEmpty @Size(max = 12) List<SpecRequest> specs) {
+            // @Valid on the element: without it the limits on each spec
+            // above were never checked ("name": null was a 500).
+            @NotEmpty @Size(max = 12) List<@Valid SpecRequest> specs) {
     }
 
     /**

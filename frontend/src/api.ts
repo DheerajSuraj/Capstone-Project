@@ -2,7 +2,7 @@
 // this file IS the frontend's copy of the contract, so a backend DTO
 // change should be mirrored here deliberately, not discovered at runtime.
 
-import { getAccessToken, refresh } from './auth/api'
+import { getAccessToken, refreshShared, setAccessToken } from './auth/api'
 
 export interface SpanDto {
   startLine: number
@@ -70,6 +70,9 @@ export interface CandleColumns {
   l: number[]
   c: number[]
   v: number[]
+  /** True when the range held more candles than one answer carries and
+   *  only the newest came back. */
+  truncated?: boolean
 }
 
 /** One indicator the strategy used, as reported by the backtest.
@@ -80,8 +83,12 @@ export interface UsedIndicatorDto {
   name: string
   source: string | null
   args: number[]
-  /** The engine's own cache key, e.g. "SMA(CLOSE,200)". */
+  /** The engine's own cache key, e.g. "SMA(CLOSE,200)" or "EMA(CLOSE,50)@4h". */
   key: string
+  /** null on the strategy's own candles; "4h" for EMA(CLOSE, 50) ON 4h. */
+  timeframe?: string | null
+  /** Lookback counted in those bigger candles (CLOSE[1] ON 1d = 1). */
+  offset?: number
 }
 
 export interface BacktestResultDto {
@@ -103,6 +110,151 @@ export interface BacktestResultDto {
   trades: TradeDto[]
   equityCurve: CurvePoint[]
   indicators: UsedIndicatorDto[]
+  /** Buying at the first tradable candle and holding, same fee. The bar to beat. */
+  buyHoldReturnPct: number | null
+  /** Fee per fill as a fraction (0.001 = 0.1%). */
+  feeRate: number
+  /** TradAO's measures (see MeasuresDto); absent from older servers. */
+  measures?: MeasuresDto
+  /** The account over time, for the cash-usage chart. */
+  book?: BookPointDto[]
+  /** The run by period, top down; null when nothing ran after the warm-up,
+   *  absent from older servers. */
+  report?: PeriodReportDto | null
+}
+
+/**
+ * The run cut into calendar periods (UTC, by candle open time): the whole
+ * run, its years, months, weeks (Monday to Sunday, cut at the month's end)
+ * and days. Periods chain exactly: a period starts at the equity of the
+ * close before it and ends at its last close, open positions included.
+ */
+export interface PeriodReportDto {
+  timeZone: string
+  all: PeriodNodeDto
+}
+
+export type PeriodLevel = 'ALL' | 'YEAR' | 'MONTH' | 'WEEK' | 'DAY'
+
+export interface PeriodNodeDto {
+  level: PeriodLevel
+  /** "all", "2025", "2025-03", or the first day ("2025-03-03") of a week or day. */
+  key: string
+  /** First and last UTC day with a candle, ISO dates. */
+  firstDay: string
+  lastDay: string
+  /** Open time of the first candle and close time of the last, epoch ms. */
+  start: number
+  end: number
+  stats: PeriodStatsDto
+  /** When the money was made: the run, years and months only. */
+  breakdown: PeriodBreakdownDto | null
+  /** Years of the run, months of a year, weeks of a month, days of a week. */
+  children: PeriodNodeDto[]
+}
+
+export interface PeriodStatsDto {
+  /** UTC days with at least one candle. */
+  days: number
+  candles: number
+  startEquity: number
+  endEquity: number
+  /** null when there was nothing to start from. */
+  returnPct: number | null
+  /** endEquity - startEquity, closed trades or not. */
+  pnl: number
+  /** Buy & hold over the same candles; null if it never got to buy. */
+  buyHoldPct: number | null
+  /** Worst fall from a high inside the period, counting from its start. */
+  maxDrawdownPct: number
+  tradesOpened: number
+  /** Trades are counted on the day they close. */
+  tradesClosed: number
+  wins: number
+  winRatePct: number | null
+  realizedPnl: number
+  /** Fees paid by the fills in the period. */
+  fees: number
+  timeInMarketPct: number
+  greenDays: number
+  redDays: number
+}
+
+export interface PeriodBreakdownDto {
+  /** Monday first, seven rows. */
+  weekdays: WeekdayRowDto[]
+  /** 24 rows, hours UTC; null when a candle is a day or longer. */
+  hours: HourRowDto[] | null
+  /** January first, twelve rows; the whole run only. */
+  monthsOfYear: MonthRowDto[] | null
+}
+
+export interface WeekdayRowDto {
+  /** 1 = Monday … 7 = Sunday. */
+  weekday: number
+  days: number
+  avgReturnPct: number | null
+  greenDays: number
+  pnl: number
+  tradesEntered: number
+  entryWins: number
+}
+
+export interface HourRowDto {
+  /** 0-23 UTC; a candle counts at the hour it opens. */
+  hour: number
+  /** Hours of that kind (one per day) that had candles. */
+  slots: number
+  avgReturnPct: number | null
+  greenSlots: number
+  pnl: number
+  tradesEntered: number
+  entryWins: number
+}
+
+export interface MonthRowDto {
+  /** 1 = January … 12 = December. */
+  month: number
+  months: number
+  avgReturnPct: number | null
+  greenMonths: number
+  pnl: number
+}
+
+/**
+ * The performance measures of TradAO (Tsang et al., IEEE VIS 2020), in
+ * its six categories. Sharpe, Sortino (consistency) and the win rate
+ * (prediction) are in MetricsDto / the result itself. Null = undefined
+ * for this run (e.g. fewer than two days).
+ */
+export interface MeasuresDto {
+  /** Profitability: mean daily return x 365, percent. */
+  yieldPct: number | null
+  maxDrawdownPct: number | null
+  /** Recovery: longest and average time below a previous peak, days. */
+  maxDrawdownDays: number | null
+  avgDrawdownDays: number | null
+  /** Robustness: 1-day 99% value at risk (a loss, percent) and annualized volatility. */
+  var99Pct: number | null
+  volatilityPct: number | null
+  /** Activeness. */
+  tradesPer30Days: number | null
+  timeInMarketPct: number | null
+  /** Daily returns measured. */
+  days: number
+}
+
+/** One point of the account over time. */
+export interface BookPointDto {
+  t: number
+  /** Net asset value: cash + coins x close. */
+  equity: number
+  /** Cash not in the coin. */
+  cash: number
+  /** What the coins held are worth at the close. */
+  positionValue: number
+  /** Buy & hold over the same candles; null if it never got to buy. */
+  benchmark: number | null
 }
 
 export interface RunResponse {
@@ -152,6 +304,8 @@ export interface ConditionNodeDto {
   relativeDistance: number | null
   note: string | null
   children: ConditionNodeDto[]
+  /** Parts that read a bigger timeframe: which finished candle the value came from. */
+  timeframeNote?: string | null
 }
 
 export type DecisionOutcome =
@@ -161,6 +315,7 @@ export type DecisionOutcome =
   | 'IGNORED_ALREADY_LONG'
   | 'IGNORED_NOTHING_TO_SELL'
   | 'REJECTED_TOO_SMALL'
+  | 'REJECTED_NOT_ENOUGH_CASH'
   | 'NOT_FILLED_LAST_BAR'
   | 'SETTING_APPLIED'
 
@@ -201,6 +356,53 @@ export interface BarExplanationDto {
   inPosition: boolean | null
   statements: StatementExplanationDto[]
   summary: string
+  /** The candle's volume, in the coin. */
+  volume?: number
+  /** Close against the previous close, percent (null on the first candle). */
+  changePct?: number | null
+  /** The account at this close. */
+  book?: BookDto
+  /** Every buy and sell during this candle, in order. */
+  fills?: FillDto[]
+}
+
+/** The account at one candle's close (TradAO's cash usage, at a point). */
+export interface BookDto {
+  initialCapital: number
+  equity: number
+  cash: number
+  qty: number
+  positionValue: number
+  /** Share of the net asset value in the coin, percent. */
+  cashUsagePct: number
+  entryPrice: number | null
+  entryTimeMillis: number | null
+  unrealizedPnl: number | null
+  unrealizedPct: number | null
+  peakEquity: number
+  drawdownPct: number
+  returnPct: number
+  buyHoldPct: number | null
+  realizedPnl: number
+  closedTrades: number
+  /** Protective levels from the next candle on (null = not set). */
+  stopPrice: number | null
+  takeProfitPrice: number | null
+  trailingPrice: number | null
+}
+
+export interface FillDto {
+  side: 'BUY' | 'SELL'
+  /** OPEN: at the open (an order from the last close, or a stop the price
+   *  gapped through); INSIDE: a stop or target hit during the candle;
+   *  CLOSE: the data ended and the position was valued out at the close. */
+  when: 'OPEN' | 'INSIDE' | 'CLOSE'
+  price: number
+  qty: number
+  fee: number
+  reason: 'SIGNAL' | 'STOPLOSS' | 'TAKEPROFIT' | 'TRAILING' | 'END_OF_DATA'
+  /** SELL only: profit of what was sold, fees included. */
+  pnl: number | null
 }
 
 export interface ExplainResponse {
@@ -427,12 +629,17 @@ export interface EntryViewDto {
   entryPrice: number
   tradeCount: number
   lastCandle: string | null
+  /** The return if the open position were sold now, after the exit fee —
+   *  what the profit target is judged on at the end. */
+  returnAfterExitFeePct: number
 }
 
 export interface CompetitionDetailDto {
   competition: CompetitionSummaryDto
   description: string
   isAdmin: boolean
+  /** The creator or an admin, while it is open or running. */
+  canCancel: boolean
   canEnter: boolean
   serverTime: string
   myEntries: EntryViewDto[]
@@ -574,19 +781,10 @@ export interface NewPost {
  * Several requests can be in flight at once, so several can hit an expired
  * token at once. Each must NOT refresh independently: the first would
  * rotate the refresh token and the rest would replay a spent one, which the
- * backend treats as theft and answers by revoking the whole session. One
- * shared refresh, however many callers ask for it.
+ * backend treats as theft. One shared refresh — the same one the sign-in
+ * code uses, across tabs too (see refreshShared).
  */
-let refreshInFlight: Promise<unknown> | null = null
-
-function refreshOnce(): Promise<unknown> {
-  if (!refreshInFlight) {
-    refreshInFlight = refresh().finally(() => {
-      refreshInFlight = null
-    })
-  }
-  return refreshInFlight
-}
+const refreshOnce = refreshShared
 
 /**
  * Every backend call goes through here so three things are always true:
@@ -598,6 +796,26 @@ function refreshOnce(): Promise<unknown> {
  * minutes, so without it the app works fine and then appears to break at
  * random, mid-backtest, with no pattern to reproduce.
  */
+/**
+ * A file (a picture) fetched with the sign-in token, as a URL the page can
+ * show. For the few things an <img src> cannot fetch itself because they
+ * are only for some people — a hidden post's pictures, seen by its author
+ * and the moderators. Revoke the URL when done with it.
+ */
+export async function authorizedObjectUrl(path: string, allowRetry = true): Promise<string> {
+  const token = getAccessToken()
+  const res = await fetch(path, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    credentials: 'include',
+  })
+  if (res.status === 401 && allowRetry && token) {
+    await refreshOnce()
+    return authorizedObjectUrl(path, false)
+  }
+  if (!res.ok) throw new Error(`${res.status}: could not load ${path}`)
+  return URL.createObjectURL(await res.blob())
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -624,6 +842,9 @@ async function request<T>(
     try {
       await refreshOnce()
     } catch {
+      // Signed out for real: drop the token so the whole app shows it,
+      // not just this one request.
+      setAccessToken(null)
       throw new Error('Your session has expired. Please sign in again.')
     }
     return request<T>(path, init, false)
@@ -685,11 +906,19 @@ export const api = {
       body: JSON.stringify({ source }),
     }),
 
+  /** Same as above over a chosen range (ISO instants; null = open-ended). */
+  runBacktestRange: (source: string, from: string | null, to: string | null): Promise<RunResponse> =>
+    request<RunResponse>('/api/backtest', {
+      method: 'POST',
+      body: JSON.stringify({ source, from, to }),
+    }),
+
   /** Why the strategy did what it did at one bar (epoch-ms open time). */
-  explainBar: (run: RunContext, timeMillis: number): Promise<ExplainResponse> =>
+  explainBar: (run: RunContext, timeMillis: number, signal?: AbortSignal): Promise<ExplainResponse> =>
     request<ExplainResponse>('/api/debug/explain', {
       method: 'POST',
       body: JSON.stringify({ ...run, time: timeMillis }),
+      signal,
     }),
 
   /** Signal statistics and confluence for the run. */

@@ -29,6 +29,12 @@ public final class RunRecorder implements BarObserver {
     private final byte[][] outcomes;
     /** First flat-statement index of each rule. */
     private final int[] ruleOffset;
+    /** [bar] -> protective settings after that close (percent; 0 = off). */
+    private final float[] stopPct;
+    private final float[] takeProfitPct;
+    private final float[] trailingPct;
+    /** [bar] -> highest price since entry, which the trailing stop follows. */
+    private final double[] peak;
 
     public RunRecorder(CompiledStrategy strategy, int bars) {
         List<StrategyAst.RuleDecl> rules = strategy.rules();
@@ -40,6 +46,37 @@ public final class RunRecorder implements BarObserver {
         }
         this.position = new byte[bars];
         this.outcomes = new byte[total][bars];
+        this.stopPct = new float[bars];
+        this.takeProfitPct = new float[bars];
+        this.trailingPct = new float[bars];
+        this.peak = new double[bars];
+    }
+
+    @Override
+    public void onLevels(int bar, double stop, double takeProfit, double trailing,
+                         double peakSinceEntry) {
+        stopPct[bar] = (float) stop;
+        takeProfitPct[bar] = (float) takeProfit;
+        trailingPct[bar] = (float) trailing;
+        peak[bar] = peakSinceEntry;
+    }
+
+    /** Stop-loss distance set after this close, percent (0 = off). */
+    public double stopPct(int bar) {
+        return stopPct[bar];
+    }
+
+    public double takeProfitPct(int bar) {
+        return takeProfitPct[bar];
+    }
+
+    public double trailingPct(int bar) {
+        return trailingPct[bar];
+    }
+
+    /** Highest price since entry, as of this close. */
+    public double peakSinceEntry(int bar) {
+        return peak[bar];
     }
 
     @Override

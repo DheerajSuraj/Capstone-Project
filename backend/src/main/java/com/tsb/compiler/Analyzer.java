@@ -67,9 +67,43 @@ public final class Analyzer {
     /** Memoized warm-up per let, since lets reference other lets. */
     private final Map<String, Integer> letWarmup = new HashMap<>();
 
+    /** Memoized type per let, worked out once when the let is declared.
+     *  A reference reads it from here instead of re-checking the body:
+     *  re-checking made {@code let b = a + a, c = b + b, ...} take
+     *  exponential time, and a let that names itself recurse forever.
+     *  A let whose body failed is stored as INVALID, so its uses stay quiet. */
+    private final Map<String, Type> letTypes = new HashMap<>();
+
+    /** Memoized nesting per let — how deep evaluating it recurses, counting
+     *  through the lets it builds on (see {@link #MAX_NESTING}). */
+    private final Map<String, Integer> letNesting = new HashMap<>();
+
+    /**
+     * Deepest a let or condition may nest, counting through the lets it
+     * builds on. The engine, the debugger and the signal statistics all walk
+     * a condition recursively, through every let it uses: a chain of 1,000
+     * lets ({@code let a1 = a0 + 1}, {@code let a2 = a1 + 1}, ... — 20 KB of
+     * source) overflowed the server's stack. Real strategies nest a few
+     * dozen levels at most.
+     */
+    static final int MAX_NESTING = 450;
+
     /** The indicator manifest, deduplicated and in first-use order. */
     private final Set<CompiledStrategy.IndicatorInstance> manifest =
             new LinkedHashSet<>();
+
+    /** The strategy's own timeframe, once config has been read (null if
+     *  missing or invalid — then ON can only be checked for its own shape). */
+    private String ownTimeframe;
+
+    /** Longest indicator period and lookback a strategy may use. Generous
+     *  (10,000 hourly candles is over a year), and it keeps warm-up
+     *  arithmetic far from integer overflow. */
+    public static final int MAX_PERIOD = 10_000;
+
+    /** Largest starting capital: far beyond any real account, and far below
+     *  the point where a double stops holding cents. */
+    static final double MAX_CAPITAL = 1e12;
 
     public Analyzer(StrategyAst.StrategyDecl ast) {
         this.ast = Objects.requireNonNull(ast);
@@ -87,6 +121,9 @@ public final class Analyzer {
         int warmup = 0;
         for (StrategyAst.RuleDecl rule : ast.rules()) {
             warmup = Math.max(warmup, analyzeRule(rule));
+        }
+        if (diagnostics.stream().noneMatch(Diagnostic::isError)) {
+            checkLetHistory();
         }
 
         boolean hasErrors = diagnostics.stream().anyMatch(Diagnostic::isError);
@@ -108,6 +145,10 @@ public final class Analyzer {
 
     private static final Set<String> KNOWN_KEYS =
             Set.of("symbol", "timeframe", "capital", "fee");
+
+    /** 0.1% per fill, as a fraction: Binance's standard spot trading fee.
+     *  Applies when a strategy does not set {@code fee}. */
+    public static final double DEFAULT_FEE = 0.001;
     private static final Set<String> SUPPORTED_TIMEFRAMES =
             Set.of("1m", "5m", "15m", "1h", "4h", "1d");
 
@@ -135,7 +176,10 @@ public final class Analyzer {
         String symbol = null;
         String timeframe = null;
         double capital = 0;
-        double feePercent = 0;
+        // Left out = the exchange's standard fee, never free trading: a
+        // backtest that pays no fees flatters every strategy that trades
+        // often. "fee = 0%" still models a fee-free market when wanted.
+        double feePercent = DEFAULT_FEE;
 
         StrategyAst.ConfigEntry e;
         if ((e = seen.get("symbol")) != null) {
@@ -153,6 +197,7 @@ public final class Analyzer {
             if (e.value() instanceof Expr.TimeframeLit t
                     && SUPPORTED_TIMEFRAMES.contains(t.value())) {
                 timeframe = t.value();
+                ownTimeframe = timeframe;
             } else {
                 error("SEM012", "config 'timeframe' expects one of "
                         + String.join(", ", SUPPORTED_TIMEFRAMES.stream()
@@ -161,15 +206,24 @@ public final class Analyzer {
         }
         if ((e = seen.get("capital")) != null) {
             Optional<Double> v = fold(e.value());
-            if (v.isPresent() && v.get() > 0) {
+            if (v.isPresent() && v.get() > 0 && v.get() <= MAX_CAPITAL) {
                 capital = v.get();
+            } else if (v.isPresent() && v.get() > MAX_CAPITAL) {
+                // A 300-digit capital is Infinity in a double, and every
+                // number downstream turns into NaN.
+                error("SEM012", "config 'capital' can be at most 1,000,000,000,000",
+                        e.value().span());
             } else {
                 error("SEM012", "config 'capital' expects a positive number",
                         e.value().span());
             }
         }
         if ((e = seen.get("fee")) != null) {
-            if (e.value() instanceof Expr.PercentLit p && p.value() >= 0) {
+            if (e.value() instanceof Expr.PercentLit p && p.value() >= 100) {
+                // fee = 150% would make every sale pay out a negative amount.
+                error("SEM012", "config 'fee' must be below 100% — real "
+                        + "exchanges charge around 0.1%", e.value().span());
+            } else if (e.value() instanceof Expr.PercentLit p && p.value() >= 0) {
                 // THE /100 conversion, in its one and only home.
                 feePercent = p.value() / 100.0;
             } else {
@@ -193,12 +247,77 @@ public final class Analyzer {
             error("SEM010", "a let must hold a number or a condition; "
                     + friendly(t) + " values belong in config", let.value().span());
         }
+        int nesting = nestingOf(let.value());
+        if ((t == Type.NUMBER || t == Type.BOOL) && nesting > MAX_NESTING) {
+            error("SEM017", "'" + let.name() + "' builds on too many levels of "
+                    + "other lets (" + nesting + " deep; the most is " + MAX_NESTING
+                    + ") — combine some of them into one", let.value().span());
+            t = Type.INVALID; // its uses stay quiet: one mistake, one message
+        }
         if (scope.putIfAbsent(let.name(), let) != null) {
             error("SEM005", "'" + let.name() + "' is declared more than once",
                     let.span());
         } else {
             letWarmup.put(let.name(), warmupOf(let.value()));
+            letTypes.put(let.name(),
+                    t == Type.NUMBER || t == Type.BOOL ? t : Type.INVALID);
+            letNesting.put(let.name(), t == Type.INVALID ? 0 : nesting);
         }
+    }
+
+    /**
+     * Most past values the lets may keep in total ({@link LetHistory}): the
+     * engine stores each let's values as far back as anything reads it.
+     * 100,000 is ten lets each read 10,000 candles back — real strategies
+     * keep a few dozen.
+     */
+    static final long MAX_LET_HISTORY = 100_000;
+
+    private void checkLetHistory() {
+        Map<String, Integer> history = LetHistory.of(ast.lets(), ast.rules());
+        long slots = LetHistory.slots(history);
+        if (slots <= MAX_LET_HISTORY) {
+            return;
+        }
+        StrategyAst.LetDecl furthest = null;
+        for (StrategyAst.LetDecl let : ast.lets()) {
+            if (history.containsKey(let.name()) && (furthest == null
+                    || history.get(let.name()) > history.get(furthest.name()))) {
+                furthest = let;
+            }
+        }
+        if (furthest == null) {
+            return; // cannot happen: slots > 0 means some let is read
+        }
+        error("SEM018", "the named values look back too far in total: running this "
+                + "would keep " + slots + " past values (the most is " + MAX_LET_HISTORY
+                + "). '" + furthest.name() + "' alone is read "
+                + history.get(furthest.name()) + " candles back — use smaller [n] "
+                + "lookbacks on named values", furthest.span());
+    }
+
+    /** How deep evaluating {@code e} recurses, lets included. Each let's
+     *  own depth is worked out once, when it is declared. */
+    private int nestingOf(Expr e) {
+        return 1 + switch (e) {
+            case Expr.NumberLit ignored -> 0;
+            case Expr.PercentLit ignored -> 0;
+            case Expr.TimeframeLit ignored -> 0;
+            case Expr.StringLit ignored -> 0;
+            case Expr.PriceRef ignored -> 0;
+            case Expr.VarRef v -> letNesting.getOrDefault(v.name(), 0);
+            case Expr.Call c -> {
+                int deepest = 0;
+                for (Expr arg : c.args()) {
+                    deepest = Math.max(deepest, nestingOf(arg));
+                }
+                yield deepest;
+            }
+            case Expr.Lookback l -> nestingOf(l.target());
+            case Expr.On o -> nestingOf(o.target());
+            case Expr.Unary u -> nestingOf(u.operand());
+            case Expr.Binary b -> Math.max(nestingOf(b.left()), nestingOf(b.right()));
+        };
     }
 
     /** Returns the rule's warm-up contribution. */
@@ -210,6 +329,12 @@ public final class Analyzer {
                 error("SEM011", "an IF condition must be true/false — this is "
                         + friendly(condType) + "; did you mean a comparison "
                         + "like '... > 0'?", stmt.condition().span());
+            }
+            int nesting = condType == Type.BOOL ? nestingOf(stmt.condition()) : 0;
+            if (nesting > MAX_NESTING) {
+                error("SEM017", "this condition builds on too many levels of lets ("
+                        + nesting + " deep; the most is " + MAX_NESTING
+                        + ") — combine some of them into one", stmt.condition().span());
             }
             warmup = Math.max(warmup, warmupOf(stmt.condition()));
 
@@ -223,7 +348,17 @@ public final class Analyzer {
 
     private int analyzeAction(StrategyAst.Action action) {
         return switch (action) {
-            case StrategyAst.Action.Buy b -> analyzeSizing(b.sizing());
+            case StrategyAst.Action.Buy b -> {
+                // One position at a time: when a BUY fills there is no
+                // position yet, so "% OF POSITION" would be a share of zero.
+                if (b.sizing() instanceof StrategyAst.Sizing.PercentOf p
+                        && p.base() == StrategyAst.Sizing.Base.POSITION) {
+                    error("SEM012", "BUY can't be a share of the position — "
+                            + "there is none yet when it buys. Use '% OF EQUITY'",
+                            p.span());
+                }
+                yield analyzeSizing(b.sizing());
+            }
             case StrategyAst.Action.Sell s -> analyzeSizing(s.sizing());
             case StrategyAst.Action.Set s -> {
                 if (!(s.value() instanceof Expr.PercentLit p) || p.value() <= 0) {
@@ -252,7 +387,8 @@ public final class Analyzer {
             case StrategyAst.Sizing.Quantity q -> {
                 Optional<Double> v = fold(q.amount());
                 if (typeOf(q.amount()) != Type.NUMBER
-                        || v.isEmpty() || v.get() <= 0) {
+                        || v.isEmpty() || v.get() <= 0 || !Double.isFinite(v.get())
+                        || v.get() > MAX_CAPITAL) {
                     error("SEM012", "'qty =' expects a positive constant "
                                     + "number (or use '25% OF EQUITY')",
                             q.amount().span());
@@ -279,13 +415,13 @@ public final class Analyzer {
             case Expr.PriceRef ignored -> Type.NUMBER;
 
             case Expr.VarRef v -> {
-                StrategyAst.LetDecl let = scope.get(v.name());
-                if (let == null) {
+                Type known = letTypes.get(v.name());
+                if (known == null) {
                     error("SEM001", "unknown name '" + v.name() + "'"
                             + suggest(v.name(), candidates()), v.span());
                     yield Type.INVALID;
                 }
-                yield typeOfQuiet(let.value());
+                yield known;
             }
 
             case Expr.Call c -> typeOfCall(c);
@@ -297,8 +433,15 @@ public final class Analyzer {
                             + "not " + friendly(target), l.span());
                     yield Type.INVALID;
                 }
+                if (l.offset() > MAX_PERIOD) {
+                    error("SEM012", "a lookback can go back at most " + MAX_PERIOD
+                            + " candles, got [" + l.offset() + "]", l.span());
+                    yield Type.INVALID;
+                }
                 yield target;
             }
+
+            case Expr.On o -> typeOfOn(o);
 
             case Expr.Unary u -> {
                 Type operand = typeOf(u.operand());
@@ -372,6 +515,99 @@ public final class Analyzer {
     }
 
     private Type typeOfCall(Expr.Call c) {
+        return typeOfCall(c, null, 0);
+    }
+
+    /**
+     * {@code X ON 4h}: checks the shape (one indicator or price, at most one
+     * ON), the timeframe (a whole multiple of the strategy's own, bigger than
+     * it), and registers the indicator on the bigger candles.
+     */
+    private Type typeOfOn(Expr.On o) {
+        Expr core = o.target();
+        int offset = 0;
+        if (core instanceof Expr.Lookback l) {
+            core = l.target();
+            offset = l.offset();
+            if (offset > MAX_PERIOD) {
+                error("SEM012", "a lookback can go back at most " + MAX_PERIOD
+                        + " candles, got [" + offset + "]", l.span());
+                return Type.INVALID;
+            }
+        }
+        if (core instanceof Expr.On) {
+            error("SEM014", "ON can only be used once on a value", o.span());
+            return Type.INVALID;
+        }
+        boolean indicator = core instanceof Expr.Call c
+                && Registry.lookup(c.name()).map(Registry.Signature::precomputed)
+                .orElse(false);
+        if (core instanceof Expr.Call c && Registry.lookup(c.name()).isEmpty()) {
+            return typeOf(core); // reports the unknown name, with suggestions
+        }
+        if (core instanceof Expr.VarRef v && scope.containsKey(v.name())) {
+            error("SEM014", "'" + v.name() + "' is already a value on this strategy's "
+                    + "own candles — put the ON inside it: let " + v.name() + " = "
+                    + AstPrinter.print(scope.get(v.name()).value()) + " ON "
+                    + o.timeframe(), o.span());
+            return Type.INVALID;
+        }
+        if (core instanceof Expr.Call c && !indicator) {
+            error("SEM014", c.name() + " is a function, not an indicator — put the ON "
+                    + "on the values inside it, e.g. CROSSOVER(EMA(CLOSE, 9) ON "
+                    + o.timeframe() + ", EMA(CLOSE, 21) ON " + o.timeframe() + ")",
+                    o.span());
+            return Type.INVALID;
+        }
+        if (!indicator && !(core instanceof Expr.PriceRef)) {
+            error("SEM014", "ON works on one indicator or price, e.g. "
+                    + "EMA(CLOSE, 50) ON 4h or CLOSE ON 1d. To use it in a "
+                    + "calculation, name it first: let trend = EMA(CLOSE, 50) ON 4h",
+                    o.span());
+            return Type.INVALID;
+        }
+
+        if (!Timeframe.ON_TIMEFRAMES.contains(o.timeframe())) {
+            error("SEM015", "ON accepts " + String.join(", ", Timeframe.ON_TIMEFRAMES)
+                    + " — got " + o.timeframe(), o.span());
+            return Type.INVALID;
+        }
+        if (ownTimeframe != null) {
+            long big = Timeframe.millis(o.timeframe()).orElseThrow();
+            long own = Timeframe.millis(ownTimeframe).orElseThrow();
+            if (big == own) {
+                error("SEM015", "this strategy already runs on " + ownTimeframe
+                        + " candles — leave out 'ON " + o.timeframe() + "'", o.span());
+                return Type.INVALID;
+            }
+            if (big < own) {
+                error("SEM015", "ON needs a bigger timeframe than the strategy's own ("
+                        + ownTimeframe + "): smaller candles can't be built from "
+                        + "bigger ones", o.span());
+                return Type.INVALID;
+            }
+            if (big % own != 0) {
+                error("SEM015", ownTimeframe + " candles don't fit evenly into "
+                        + o.timeframe() + " candles — pick a timeframe that is a "
+                        + "whole number of " + ownTimeframe + " candles", o.span());
+                return Type.INVALID;
+            }
+        }
+
+        if (core instanceof Expr.PriceRef p) {
+            manifest.add(new CompiledStrategy.IndicatorInstance(
+                    CompiledStrategy.IndicatorInstance.PRICE, p.field(), List.of(),
+                    o.timeframe(), offset));
+            return Type.NUMBER;
+        }
+        return typeOfCall((Expr.Call) core, o.timeframe(), offset);
+    }
+
+    /**
+     * Types a call. With {@code onTimeframe} set, the indicator is registered
+     * on those bigger candles instead of the strategy's own.
+     */
+    private Type typeOfCall(Expr.Call c, String onTimeframe, int onOffset) {
         Optional<Registry.Signature> found = Registry.lookup(c.name());
         if (found.isEmpty()) {
             error("SEM001", "unknown indicator or function '" + c.name() + "'"
@@ -423,6 +659,11 @@ public final class Analyzer {
                                 + "' must be a positive whole number, got "
                                 + AstPrinter.print(arg), arg.span());
                         ok = false;
+                    } else if (param.positiveInt() && v.get() > MAX_PERIOD) {
+                        error("SEM012", c.name() + "'s '" + param.name()
+                                + "' can be at most " + MAX_PERIOD + ", got "
+                                + AstPrinter.print(arg), arg.span());
+                        ok = false;
                     } else {
                         constArgs.add(v.get());
                     }
@@ -439,22 +680,30 @@ public final class Analyzer {
             }
         }
 
+        // MACD's fast average is normally the faster one. Equal periods make
+        // the line exactly 0 on every candle; swapped ones flip its sign.
+        // A warning, not an error: such a strategy still runs exactly as
+        // written (and strategies saved before this check keep compiling).
+        if (ok && (c.name().equals("MACD_LINE") || c.name().equals("MACD_SIGNAL"))
+                && constArgs.size() >= 2 && constArgs.get(0) >= constArgs.get(1)) {
+            String example = c.name() + "(12, 26"
+                    + (c.name().equals("MACD_SIGNAL") ? ", 9" : "") + ")";
+            warning("SEM016", constArgs.get(0).equals(constArgs.get(1))
+                    ? c.name() + " with the same fast and slow period ("
+                            + fmtArg(constArgs.get(0)) + ") is always 0. Usually the fast "
+                            + "period is the smaller one, e.g. " + example
+                    : c.name() + "'s fast period (" + fmtArg(constArgs.get(0))
+                            + ") is bigger than its slow period (" + fmtArg(constArgs.get(1))
+                            + "), so the line is upside down: positive when price momentum "
+                            + "is falling. Usually the fast period is the smaller one, e.g. "
+                            + example, c.span());
+        }
+
         if (ok && sig.precomputed()) {
             manifest.add(new CompiledStrategy.IndicatorInstance(
-                    c.name(), source, List.copyOf(constArgs)));
+                    c.name(), source, List.copyOf(constArgs), onTimeframe, onOffset));
         }
         return ok ? (sig.returnsBool() ? Type.BOOL : Type.NUMBER) : Type.INVALID;
-    }
-
-    /** Types without emitting diagnostics — for re-typing an already
-     *  validated let body when a VarRef reads it. */
-    private Type typeOfQuiet(Expr e) {
-        int before = diagnostics.size();
-        Type t = typeOf(e);
-        while (diagnostics.size() > before) {
-            diagnostics.remove(diagnostics.size() - 1);
-        }
-        return t;
     }
 
     // ═════════════════════════ Constant folding ════════════════════════
@@ -477,7 +726,8 @@ public final class Analyzer {
             case Expr.StringLit ignored -> 0;
             case Expr.PriceRef ignored -> 0;
             case Expr.VarRef v -> letWarmup.getOrDefault(v.name(), 0);
-            case Expr.Lookback l -> warmupOf(l.target()) + l.offset();
+            case Expr.Lookback l -> capped((long) warmupOf(l.target()) + l.offset());
+            case Expr.On o -> warmupOfOn(o);
             case Expr.Unary u -> warmupOf(u.operand());
             case Expr.Binary b -> Math.max(warmupOf(b.left()),
                     warmupOf(b.right()));
@@ -504,6 +754,38 @@ public final class Analyzer {
                 }).orElse(args);
             }
         };
+    }
+
+    /**
+     * Warm-up of {@code X ON 4h}, in the strategy's OWN candles. X needs w
+     * bigger candles (its own warm-up plus any lookback written inside the
+     * ON). The series may start in the middle of a bigger candle (that one
+     * is skipped), and each bigger candle only becomes visible at its last
+     * small candle — so (w + 2) bigger candles' worth of small candles is
+     * always enough.
+     */
+    private int warmupOfOn(Expr.On o) {
+        Expr core = o.target();
+        int offset = 0;
+        if (core instanceof Expr.Lookback l) {
+            core = l.target();
+            offset = l.offset();
+        }
+        long bigger = (long) warmupOf(core) + offset;
+        long ratio = 1;
+        if (ownTimeframe != null) {
+            long big = Timeframe.millis(o.timeframe()).orElse(0);
+            long own = Timeframe.millis(ownTimeframe).orElse(0);
+            if (own > 0 && big > own && big % own == 0) {
+                ratio = big / own;
+            }
+        }
+        return capped((bigger + 2) * ratio);
+    }
+
+    /** Warm-ups stay ints; anything absurd was already an error. */
+    private static int capped(long bars) {
+        return (int) Math.min(bars, Integer.MAX_VALUE / 4);
     }
 
     // ═════════════════════════ Helpers ═════════════════════════════════
@@ -550,6 +832,12 @@ public final class Analyzer {
         return prev[b.length()];
     }
 
+    /** 12.0 -> "12", 2.5 -> "2.5": numbers as the user typed them. */
+    private static String fmtArg(double v) {
+        return v == Math.floor(v) && Math.abs(v) < 1e15
+                ? Long.toString((long) v) : Double.toString(v);
+    }
+
     private static String friendly(Type t) {
         return switch (t) {
             case NUMBER -> "a number";
@@ -571,5 +859,10 @@ public final class Analyzer {
 
     private void error(String code, String message, Span span) {
         diagnostics.add(Diagnostic.error(code, message, span));
+    }
+
+    /** Shown to the user, but does not stop the strategy from running. */
+    private void warning(String code, String message, Span span) {
+        diagnostics.add(Diagnostic.warning(code, message, span));
     }
 }

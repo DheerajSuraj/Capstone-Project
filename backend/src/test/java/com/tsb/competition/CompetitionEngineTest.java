@@ -160,6 +160,77 @@ class CompetitionEngineTest {
         }
 
         @Test
+        @DisplayName("on gappy, wicky candles with stops and a trailing stop, still the same trades")
+        void matchesBacktesterWithGaps() {
+            CompiledStrategy s = compile("""
+                    rule a { IF CLOSE > SMA(CLOSE, 10) THEN BUY ALL }
+                    rule b { IF CROSSUNDER(CLOSE, SMA(CLOSE, 30)) THEN SELL ALL }
+                    rule c { IF CLOSE > 0 THEN SET STOPLOSS = 4% }
+                    rule d { IF CLOSE > 0 THEN SET TRAILING = 3% }
+                    rule e { IF CLOSE > 0 THEN SET TAKEPROFIT = 6% }
+                    """);
+            int gapFills = 0;
+            for (long seed = 11; seed <= 16; seed++) {
+                Random r = new Random(seed);
+                int n = 1500;
+                long[] t = new long[n];
+                double[] o = new double[n], h = new double[n], l = new double[n],
+                        cl = new double[n], v = new double[n];
+                double px = 100;
+                for (int i = 0; i < n; i++) {
+                    // Opens jump away from the previous close (gaps), and
+                    // wicks reach well beyond the body.
+                    double open = px * Math.exp(r.nextGaussian() * 0.015);
+                    double close = open * Math.exp(r.nextGaussian() * 0.02);
+                    t[i] = i * HOUR;
+                    o[i] = open;
+                    cl[i] = close;
+                    h[i] = Math.max(open, close) * Math.exp(Math.abs(r.nextGaussian()) * 0.01);
+                    l[i] = Math.min(open, close) * Math.exp(-Math.abs(r.nextGaussian()) * 0.01);
+                    v[i] = 100;
+                    px = close;
+                }
+                CandleSeries c = new CandleSeries(t, o, h, l, cl, v);
+                ExchangeRules ex = new ExchangeRules(0.001, 10);
+                RuleSet unlimited = new RuleSet(1000, 0.001, 1e9, 100, 0, 0, 0);
+                CompetitionEngine engine = new CompetitionEngine(s, c, ex, unlimited);
+                int start = 100;
+                BacktestResult bt = new Backtester().run(engine.strategy(), c, ex,
+                        BarObserver.NONE, start);
+
+                EntryState st = EntryState.start(unlimited);
+                List<CompetitionEngine.Closed> closed = new ArrayList<>();
+                for (int i = start; i < c.size(); i++) {
+                    engine.step(st, i).forEach(e -> {
+                        if (e instanceof CompetitionEngine.Closed x) {
+                            closed.add(x);
+                        }
+                    });
+                }
+                engine.finish(st, c.size() - 1).forEach(e -> closed.add((CompetitionEngine.Closed) e));
+
+                assertEquals(bt.trades().size(), closed.size(), "seed " + seed);
+                for (int k = 0; k < closed.size(); k++) {
+                    Trade want = bt.trades().get(k);
+                    CompetitionEngine.Closed got = closed.get(k);
+                    assertEquals(want.exitTime().toEpochMilli(), got.exitTime());
+                    assertEquals(want.exitPrice(), got.exitPrice(), 1e-12);
+                    // Same exit, except the very last one is named for the
+                    // competition ending rather than the data running out.
+                    assertEquals(want.exitReason() == Trade.ExitReason.END_OF_DATA
+                            ? "END_OF_COMPETITION" : want.exitReason().name(), got.reason());
+                    if (want.exitReason() != Trade.ExitReason.SIGNAL
+                            && want.exitReason() != Trade.ExitReason.END_OF_DATA
+                            && want.exitPrice() == o[want.exitBar()]) {
+                        gapFills++;
+                    }
+                }
+                assertEquals(bt.finalEquity(), st.equity, 1e-6);
+            }
+            assertTrue(gapFills > 0, "the data must actually exercise gap fills");
+        }
+
+        @Test
         @DisplayName("a signal at a close fills at the NEXT candle's open")
         void nextOpen() {
             CompetitionEngine e = new CompetitionEngine(compile(BUY_ALWAYS),
@@ -297,6 +368,102 @@ class CompetitionEngineTest {
                     series(100, 100), ExchangeRules.none(), r);
             assertEquals(5000, e.strategy().capital());
             assertEquals(0.001, e.strategy().feePercent());
+        }
+    }
+
+    @Nested
+    @DisplayName("October fixes")
+    class OctoberFixes {
+
+        /** Bar 0 closes at 100; bar 1 opens at 100, dips to 85, closes at 95. */
+        private CandleSeries dipCandle() {
+            return new CandleSeries(
+                    new long[]{0, HOUR, 2 * HOUR},
+                    new double[]{100, 100, 95},
+                    new double[]{100, 101, 96},
+                    new double[]{100, 85, 94},
+                    new double[]{100, 95, 95},
+                    new double[]{100, 100, 100});
+        }
+
+        @Test
+        @DisplayName("max drawdown is checked inside the candle: a 15% dip knocks out a 10% limit")
+        void intrabarDrawdown() {
+            RuleSet r = rules(5, 10, 0, 0, 0);
+            CompetitionEngine e = new CompetitionEngine(compile(BUY_ALWAYS),
+                    dipCandle(), ExchangeRules.none(), r);
+            EntryState s = EntryState.start(r);
+            e.step(s, 0);
+            List<CompetitionEngine.Event> ev = e.step(s, 1); // buys 10 at 100, dips to 85
+            assertEquals(EntryState.Status.ELIMINATED, s.status);
+            assertTrue(s.statusReason.contains("during the candle"), s.statusReason);
+            CompetitionEngine.Closed out = (CompetitionEngine.Closed) ev.get(1);
+            assertEquals("ELIMINATED", out.reason());
+            assertEquals(90, out.exitPrice(), 1e-9); // where equity met the 10% limit
+            assertEquals(900, s.equity, 1e-9);
+        }
+
+        @Test
+        @DisplayName("a stop above the limit fires first, and the entry stays in")
+        void stopBeforeLimit() {
+            RuleSet r = rules(5, 10, 0, 0, 0);
+            CompetitionEngine e = new CompetitionEngine(compile("""
+                    rule a { IF CLOSE > 0 THEN BUY ALL }
+                    rule s { IF CLOSE > 0 THEN SET STOPLOSS = 5% }
+                    """), dipCandle(), ExchangeRules.none(), r);
+            EntryState s = EntryState.start(r);
+            e.step(s, 0);
+            List<CompetitionEngine.Event> ev = e.step(s, 1);
+            assertEquals(EntryState.Status.ACTIVE, s.status);
+            CompetitionEngine.Closed out = (CompetitionEngine.Closed) ev.get(1);
+            assertEquals("STOPLOSS", out.reason());
+            assertEquals(95, out.exitPrice(), 1e-9);
+        }
+
+        @Test
+        @DisplayName("a fixed BUY bigger than the cash is skipped, as in the backtester")
+        void fixedBuyNeedsCash() {
+            RuleSet r = rules(5, 50, 0, 0, 0);
+            CompetitionEngine e = new CompetitionEngine(
+                    compile("rule a { IF CLOSE > 0 THEN BUY qty = 20 }"),
+                    series(100, 100, 100), ExchangeRules.none(), r);
+            EntryState s = EntryState.start(r);
+            List<CompetitionEngine.Event> ev = runAll(e, s, 3);
+            assertTrue(ev.isEmpty(), "20 x 100 is more than the 1000 cash: " + ev);
+            assertEquals(1000, s.cash, 1e-9);
+        }
+
+        @Test
+        @DisplayName("no answer runs neither THEN nor ELSE, as in the backtester")
+        void unknownRunsNoBranch() {
+            RuleSet r = rules(5, 50, 0, 0, 0);
+            // Flat candles: 0 / 0, so the condition has no answer on any candle.
+            CompetitionEngine e = new CompetitionEngine(
+                    compile("rule a { IF (CLOSE - OPEN) / (HIGH - LOW) > 0.5 THEN SELL ALL ELSE BUY ALL }"),
+                    series(100, 100, 100, 100), ExchangeRules.none(), r);
+            EntryState s = EntryState.start(r);
+            List<CompetitionEngine.Event> ev = runAll(e, s, 4);
+            assertTrue(ev.isEmpty(), "the ELSE BUY must not run on no answer: " + ev);
+            assertFalse(s.inTrade());
+        }
+
+        @Test
+        @DisplayName("the daily loss limit stops a BUY right after the SELL that hit it")
+        void haltBetweenFills() {
+            RuleSet r = rules(5, 50, 5, 0, 0);
+            // SELL first in rule order, so both orders meet the same open.
+            CompetitionEngine e = new CompetitionEngine(compile("""
+                    rule b { IF CLOSE < 95 THEN SELL ALL }
+                    rule a { IF CLOSE > 0 THEN BUY ALL }
+                    """), series(100, 100, 90, 90, 90), ExchangeRules.none(), r);
+            EntryState s = EntryState.start(r);
+            e.step(s, 0);
+            e.step(s, 1); // bought at 100
+            e.step(s, 2); // close 90: SELL and BUY wait for the next open
+            List<CompetitionEngine.Event> ev = e.step(s, 3);
+            assertEquals(1, ev.size(), "only the SELL: " + ev);
+            assertTrue(s.haltedToday);
+            assertFalse(s.inTrade());
         }
     }
 

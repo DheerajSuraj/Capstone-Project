@@ -93,6 +93,27 @@ export function expr(raw: string): string {
   const s = raw.trim()
   if (/^-?\d+(\.\d+)?$/.test(s)) return s
 
+  // (X) → X, when the parentheses wrap the whole thing
+  if (s.startsWith('(') && s.endsWith(')') && balanced(s.slice(1, -1)) && wraps(s)) {
+    return expr(s.slice(1, -1))
+  }
+
+  // X ON 4h → X on the 4h chart; CLOSE[1] ON 1d → the previous 1d close
+  const on = s.match(/^(.*) ON (\d+[mhdw])$/)
+  if (on && balanced(on[1])) {
+    const price = on[1].match(/^(CLOSE|OPEN|HIGH|LOW|VOLUME)(?:\[(\d+)\])?$/)
+    if (price) {
+      const what = { CLOSE: 'close', OPEN: 'open', HIGH: 'high', LOW: 'low', VOLUME: 'volume' }[
+        price[1] as 'CLOSE' | 'OPEN' | 'HIGH' | 'LOW' | 'VOLUME'
+      ]
+      const back = Number(price[2] ?? 0)
+      if (back === 0) return `the last ${on[2]} ${what}`
+      if (back === 1) return `the previous ${on[2]} ${what}`
+      return `the ${on[2]} ${what} ${back} candles back`
+    }
+    return `${expr(on[1])} on the ${on[2]} chart`
+  }
+
   // X[3] → X 3 candles ago
   const lb = s.match(/^(.*)\[(\d+)\]$/)
   if (lb && balanced(lb[1])) {
@@ -106,6 +127,17 @@ export function expr(raw: string): string {
   }
   if (PRICE[s]) return PRICE[s]
   return s // a let name, or arithmetic — leave as written
+}
+
+/** True when the first '(' closes at the very end: "(a) + (b)" is not wrapped. */
+function wraps(s: string): boolean {
+  let d = 0
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '(') d++
+    if (s[i] === ')') d--
+    if (d === 0 && i < s.length - 1) return false
+  }
+  return true
 }
 
 function balanced(s: string): boolean {
@@ -165,6 +197,8 @@ export function action(a: string): string {
         ? `${verb} with ${pct[1]}% of your money`
         : `${verb} ${pct[1]}% of what you hold`
     }
+    const n = size.match(/^qty = ([\d.]+)$/)
+    if (n) return `${verb} exactly ${n[1]} ${n[1] === '1' ? 'coin' : 'coins'}`
     return `${verb} ${size.replace(/^qty = /, '')}`
   }
   const set = a.match(/^SET (STOPLOSS|TAKEPROFIT|TRAILING) = (.*)$/)

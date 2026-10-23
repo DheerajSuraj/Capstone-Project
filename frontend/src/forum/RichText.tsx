@@ -71,7 +71,11 @@ function paragraphs(text: string): ReactNode[] {
   return out
 }
 
-const TOKEN = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|https?:\/\/[^\s<>"')\]]+)/g
+// *italic* only when the stars hug the words, so "2 * 3 * 4" and snake*case
+// stay as typed; a link stops before the full stop or comma after it.
+const TOKEN =
+  /(`[^`\n]+`|\*\*(?!\s)[^*\n]+?(?<!\s)\*\*|(?<![\w*])\*(?![\s*])[^*\n]+?(?<![\s*])\*(?![\w*])|https?:\/\/[^\s<>"')\]]+)/g
+const TRAILING = /[.,!?:;]+$/
 
 export function inline(line: string): ReactNode[] {
   const out: ReactNode[] = []
@@ -84,12 +88,16 @@ export function inline(line: string): ReactNode[] {
     if (t.startsWith('`')) out.push(<code key={k++}>{t.slice(1, -1)}</code>)
     else if (t.startsWith('**')) out.push(<strong key={k++}>{t.slice(2, -2)}</strong>)
     else if (t.startsWith('*')) out.push(<em key={k++}>{t.slice(1, -1)}</em>)
-    else
+    else {
+      const trail = TRAILING.exec(t)?.[0] ?? ''
+      const url = trail ? t.slice(0, -trail.length) : t
       out.push(
-        <a key={k++} href={t} target="_blank" rel="noopener noreferrer nofollow ugc">
-          {t}
+        <a key={k++} href={url} target="_blank" rel="noopener noreferrer nofollow ugc">
+          {url}
         </a>,
       )
+      if (trail) out.push(trail)
+    }
     last = at + t.length
   }
   if (last < line.length) out.push(line.slice(last))

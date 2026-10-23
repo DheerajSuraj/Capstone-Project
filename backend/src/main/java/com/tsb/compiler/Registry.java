@@ -156,7 +156,7 @@ public final class Registry {
             indicator("WMA", List.of(Param.series("source"), Param.period("period")),
                     c -> (int) c[0]),
             indicator("HMA", List.of(Param.series("source"), Param.period("period")),
-                    c -> (int) c[0] + (int) Math.round(Math.sqrt(c[0]))),
+                    c -> (int) c[0] + (int) Math.floor(Math.sqrt(c[0]))),
 
             // ── Expansion set: channels & window stats ──────────────────
             indicator("DONCHIAN_UPPER", List.of(Param.period("period")),

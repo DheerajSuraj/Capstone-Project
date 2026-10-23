@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type ForumPostDto } from '../api'
+import { api, authorizedObjectUrl, type ForumPostDto } from '../api'
 import RichText from './RichText'
 import StrategyCard from './StrategyCard'
 import { ago, categoryIcon, categoryLabel } from './util'
@@ -35,6 +35,36 @@ export default function PostPage({
   }, [id])
 
   useEffect(load, [load])
+
+  // A hidden post's pictures are served only to its author and the
+  // moderators, and an <img> cannot send the sign-in token — so for a
+  // hidden post they are fetched with it and shown from memory.
+  const [privateUrls, setPrivateUrls] = useState<Record<number, string>>({})
+  const hiddenImages = data?.hidden ? data.images : null
+  useEffect(() => {
+    if (!hiddenImages || hiddenImages.length === 0) return
+    let cancelled = false
+    const made: string[] = []
+    Promise.all(
+      hiddenImages.map((img) =>
+        authorizedObjectUrl(img.url)
+          .then((u) => {
+            made.push(u)
+            return [img.id, u] as const
+          })
+          .catch(() => null),
+      ),
+    ).then((pairs) => {
+      if (cancelled) return
+      setPrivateUrls(Object.fromEntries(pairs.filter((x) => x != null)))
+    })
+    return () => {
+      cancelled = true
+      made.forEach((u) => URL.revokeObjectURL(u))
+    }
+  }, [hiddenImages])
+  const srcOf = (img: { id: number; url: string }) =>
+    data?.hidden ? privateUrls[img.id] : img.url
 
   // Esc closes the full-size picture.
   useEffect(() => {
@@ -75,7 +105,10 @@ export default function PostPage({
   const report = need(() => {
     const reason = window.prompt('What is wrong with this post? (spam, abuse, scam…)')
     if (reason && reason.trim()) {
-      act(() => api.forumReport(p.id, reason.trim()), () => setNote('Thanks — a moderator will take a look.'))
+      act(() => api.forumReport(p.id, reason.trim()), () => {
+        setNote('Thanks — a moderator will take a look.')
+        load() // "You reported this post", and hidden if that was the last straw
+      })
     }
   })
   const remove = () => {
@@ -122,11 +155,18 @@ export default function PostPage({
 
         {data.images.length > 0 && (
           <div className={`tsb-f__gallery n${Math.min(data.images.length, 4)}`}>
-            {data.images.map((img) => (
-              <button key={img.id} type="button" className="tsb-f__img" onClick={() => setZoom(img.url)}>
-                <img src={img.url} alt="" loading="lazy" width={img.width} height={img.height} />
-              </button>
-            ))}
+            {data.images.map((img) => {
+              const src = srcOf(img)
+              return (
+                <button key={img.id} type="button" className="tsb-f__img" onClick={() => src && setZoom(src)}>
+                  {src ? (
+                    <img src={src} alt="" loading="lazy" width={img.width} height={img.height} />
+                  ) : (
+                    <span className="tsb-f__muted">Loading picture…</span>
+                  )}
+                </button>
+              )
+            })}
           </div>
         )}
 
@@ -162,6 +202,7 @@ export default function PostPage({
           )}
         </div>
         {note && <p className="tsb-f__note">{note}</p>}
+        {error && <p className="error-note">{error}</p>}
       </article>
 
       <section className="tsb-f__comments">

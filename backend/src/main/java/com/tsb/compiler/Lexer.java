@@ -170,7 +170,8 @@ public final class Lexer {
 
         if (isLetter(peek())) {
             char suffix = peek();
-            boolean timeframeSuffix = suffix == 'm' || suffix == 'h' || suffix == 'd';
+            boolean timeframeSuffix = suffix == 'm' || suffix == 'h' || suffix == 'd'
+                    || suffix == 'w';
             // A timeframe is digits + one suffix letter and nothing more:
             // '1h' yes; '1.5h', '1hr', '3x' no.
             if (!isDecimal && timeframeSuffix && !isAlphaNumeric(peekAt(1))) {
@@ -185,7 +186,7 @@ public final class Lexer {
                 advance();
             }
             error("LEX003", "invalid numeric literal '" + lexemeSoFar()
-                    + "' (timeframes are digits plus m/h/d, e.g. 15m, 1h, 1d)");
+                    + "' (timeframes are digits plus m/h/d/w, e.g. 15m, 1h, 1d, 1w)");
             return;
         }
 
@@ -332,6 +333,13 @@ public final class Lexer {
     }
 
     private void error(String code, String message) {
-        diagnostics.add(Diagnostic.error(code, message, currentSpan()));
+        // Capped like the parser's: 64 KB of '@' must not become 65,000
+        // diagnostics in one response.
+        if (diagnostics.size() < Parser.MAX_ERRORS) {
+            diagnostics.add(Diagnostic.error(code, message, currentSpan()));
+        } else if (diagnostics.size() == Parser.MAX_ERRORS) {
+            diagnostics.add(Diagnostic.error("LEX099",
+                    "too many errors — fix the ones above first", currentSpan()));
+        }
     }
 }

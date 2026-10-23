@@ -22,7 +22,8 @@ export default function HomeView({
   const [symbol, setSymbol] = useState('BTCUSDT')
   const [timeframe, setTimeframe] = useState('1h')
   const [livePrice, setLivePrice] = useState<number | null>(null)
-  const { account, setAccount } = usePaperAccount(signedIn)
+  const { account, setAccount, error: accountError, refresh: reloadAccount } =
+    usePaperAccount(signedIn)
 
   const changeSymbol = (s: string) => {
     setLivePrice(null)
@@ -30,6 +31,9 @@ export default function HomeView({
   }
 
   const onPrice = useCallback((p: number) => setLivePrice(p), [])
+  // The live feed dropped or went quiet: forget its last tick, so the ticket
+  // falls back to the server's price instead of showing a frozen one.
+  const onStale = useCallback(() => setLivePrice(null), [])
 
   const closePosition = useCallback(
     async (sym: string) => {
@@ -119,6 +123,7 @@ export default function HomeView({
             timeframe={timeframe}
             height={signedIn ? 'max(360px, calc(100vh - 420px))' : 'calc(100vh - 172px)'}
             onPrice={onPrice}
+            onStale={onStale}
             overlays={overlays}
             onSnapshot={onSnapshot}
           />
@@ -138,6 +143,8 @@ export default function HomeView({
           onAccount={setAccount}
           signedIn={signedIn}
           onSignIn={onSignIn}
+          loadError={accountError}
+          onRetry={reloadAccount}
         />
       </div>
     </div>

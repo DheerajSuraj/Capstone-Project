@@ -32,8 +32,8 @@ class CandleControllerTest {
         Symbol sym = Mockito.mock(Symbol.class);
         Mockito.when(sym.getId()).thenReturn(1L);
         Mockito.when(symbols.findByTicker("BTCUSDT")).thenReturn(Optional.of(sym));
-        Mockito.when(candles.loadBetween(Mockito.eq(1L), Mockito.eq("1h"),
-                        Mockito.any(), Mockito.any()))
+        Mockito.when(candles.loadLatest(Mockito.eq(1L), Mockito.eq("1h"),
+                        Mockito.any(), Mockito.any(), Mockito.eq(CandleController.MAX_BARS + 1)))
                 .thenReturn(new CandleSeries(
                         new long[]{1000, 2000},
                         new double[]{10, 11}, new double[]{12, 13},
@@ -46,7 +46,45 @@ class CandleControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.t[0]").value(1000))
                 .andExpect(jsonPath("$.c[1]").value(12.0))
-                .andExpect(jsonPath("$.v[1]").value(200.0));
+                .andExpect(jsonPath("$.v[1]").value(200.0))
+                .andExpect(jsonPath("$.truncated").value(false));
+    }
+
+    @Test
+    @DisplayName("an unknown timeframe is 400, not an empty chart")
+    void unknownTimeframe400() throws Exception {
+        Symbol sym = Mockito.mock(Symbol.class);
+        Mockito.when(symbols.findByTicker("BTCUSDT")).thenReturn(Optional.of(sym));
+        mvc.perform(get("/api/candles")
+                        .param("symbol", "BTCUSDT")
+                        .param("timeframe", "7m"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("more bars than the cap: the newest come back, marked truncated")
+    void truncatedKeepsNewest() throws Exception {
+        Symbol sym = Mockito.mock(Symbol.class);
+        Mockito.when(sym.getId()).thenReturn(1L);
+        Mockito.when(symbols.findByTicker("BTCUSDT")).thenReturn(Optional.of(sym));
+        int n = CandleController.MAX_BARS + 1;
+        long[] t = new long[n];
+        double[] x = new double[n];
+        for (int i = 0; i < n; i++) {
+            t[i] = i * 3_600_000L;
+            x[i] = i;
+        }
+        Mockito.when(candles.loadLatest(Mockito.eq(1L), Mockito.eq("1h"),
+                        Mockito.any(), Mockito.any(), Mockito.eq(n)))
+                .thenReturn(new CandleSeries(t, x, x, x, x, x));
+
+        mvc.perform(get("/api/candles")
+                        .param("symbol", "BTCUSDT")
+                        .param("timeframe", "1h"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.truncated").value(true))
+                .andExpect(jsonPath("$.t.length()").value(CandleController.MAX_BARS))
+                .andExpect(jsonPath("$.c[0]").value(1.0)); // the oldest bar was dropped
     }
 
     @Test

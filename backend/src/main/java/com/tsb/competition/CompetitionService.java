@@ -3,10 +3,13 @@ package com.tsb.competition;
 import com.tsb.marketdata.Symbol;
 import com.tsb.marketdata.SymbolRepository;
 import com.tsb.marketdata.Timeframes;
+import com.tsb.compiler.Diagnostic;
+import com.tsb.strategy.CompilationService;
 import com.tsb.strategy.StrategyService;
 import com.tsb.strategy.StrategyVersion;
 import com.tsb.user.User;
 import com.tsb.user.UserRepository;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,12 +43,14 @@ public class CompetitionService {
     private final UserRepository users;
     private final StrategyService strategies;
     private final CompetitionAccess access;
+    private final CompilationService compiler;
 
     public CompetitionService(CompetitionRepository competitions,
                               CompetitionEntryRepository entries,
                               CompetitionTradeRepository trades,
                               SymbolRepository symbols, UserRepository users,
-                              StrategyService strategies, CompetitionAccess access) {
+                              StrategyService strategies, CompetitionAccess access,
+                              CompilationService compiler) {
         this.competitions = competitions;
         this.entries = entries;
         this.trades = trades;
@@ -53,6 +58,7 @@ public class CompetitionService {
         this.users = users;
         this.strategies = strategies;
         this.access = access;
+        this.compiler = compiler;
     }
 
     // ═══ Setup ═════════════════════════════════════════════════════════
@@ -101,23 +107,49 @@ public class CompetitionService {
         Instant startsAt = ceilToBar(requested.isBefore(now) ? now : requested, bar);
         Instant endsAt = ceilToBar(startsAt.plus(c.duration()), bar);
 
+        // A rule nobody can meet: "trade on 5 days" in a competition that only
+        // touches 2 UTC days would fail every entry.
+        long day = Duration.ofDays(1).toMillis();
+        long days = Math.floorDiv(endsAt.toEpochMilli() - 1, day)
+                - Math.floorDiv(startsAt.toEpochMilli(), day) + 1;
+        if (c.rules().minTradingDays() > days) {
+            throw bad("This competition covers " + days + " UTC day" + (days == 1 ? "" : "s")
+                    + ", so 'minimum trading days' can be at most " + days + ".");
+        }
+
         return competitions.save(new Competition(name, c.description(), admin.getId(),
                 symbol.getId(), c.timeframe(), c.rules(), c.maxEntriesPerUser(),
                 startsAt, endsAt));
     }
 
+    /**
+     * Stops a competition: before it starts, or while it runs (the way out
+     * if something goes wrong mid-competition). Only the person who created
+     * it, or a configured admin, may — an empty admin list lets everyone
+     * CREATE competitions for a demo, but never cancel somebody else's.
+     */
     @Transactional
     public void cancel(User admin, long competitionId) {
-        Competition c = require(competitionId);
-        if (!access.isAdmin(admin.getUsername())) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Only admins can cancel.");
+        // Locked, so a run in progress finishes its candle first, and can't
+        // write RUNNING back over the cancel afterwards.
+        Competition c = competitions.findLockedById(competitionId).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "No competition " + competitionId + "."));
+        if (!canCancel(admin, c)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Only the person who created this competition, or an admin, can cancel it.");
         }
-        if (c.status() != Competition.Status.OPEN) {
+        if (c.status() != Competition.Status.OPEN && c.status() != Competition.Status.RUNNING) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Only a competition that has not started can be cancelled.");
+                    "This competition has already ended.");
         }
         c.cancel();
         competitions.save(c);
+    }
+
+    /** Creator of the competition, or one of the configured admins. */
+    public boolean canCancel(User u, Competition c) {
+        return (c.getCreatedBy() != null && c.getCreatedBy().equals(u.getId()))
+                || access.isModerator(u.getUsername());
     }
 
     // ═══ Join ══════════════════════════════════════════════════════════
@@ -130,7 +162,10 @@ public class CompetitionService {
     @Transactional
     public CompetitionEntry submit(long userId, long competitionId, long strategyId,
                                    int versionNumber) {
-        Competition c = require(competitionId);
+        // Locked for the whole submit: two clicks at once can't both pass the
+        // entry-cap and duplicate checks, and the start can't slip in between.
+        Competition c = competitions.findLockedById(competitionId).orElseThrow(() ->
+                new ResponseStatusException(HttpStatus.NOT_FOUND, "No competition " + competitionId + "."));
         if (c.status() != Competition.Status.OPEN || !Instant.now().isBefore(c.getStartsAt())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "The entry window is closed: this competition has already started.");
@@ -151,14 +186,41 @@ public class CompetitionService {
                     + v.getTimeframe() + ". Change its symbol and timeframe, save a new "
                     + "version, and submit that.");
         }
-        boolean duplicate = entries.findByCompetitionIdAndUserIdOrderByIdAsc(competitionId, userId)
-                .stream().anyMatch(e -> e.getStrategyVersionId().equals(v.getId()));
-        if (duplicate) {
+        // It must compile under TODAY's compiler: a version saved before a
+        // compiler change could otherwise be accepted and then fail on the
+        // first candle.
+        CompilationService.Outcome compiled = compiler.compile(v.getSource());
+        if (!compiled.ok()) {
+            String first = compiled.diagnostics().stream().filter(Diagnostic::isError)
+                    .map(Diagnostic::message).findFirst().orElse("it does not compile");
+            throw bad("That version doesn't compile with the current version of TSB ("
+                    + first + "). Open it in the builder, fix it, save a new version and "
+                    + "enter that.");
+        }
+        String hash = EntryHash.of(v.getSource());
+        List<CompetitionEntry> mine = entries.findByCompetitionIdAndUserIdOrderByIdAsc(
+                competitionId, userId);
+        if (mine.stream().anyMatch(e -> e.getStrategyVersionId().equals(v.getId()))) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "You have already entered this exact version.");
         }
-        return entries.save(new CompetitionEntry(competitionId, userId, v.getId(),
-                EntryHash.of(v.getSource()), c.rules()));
+        // The same code saved as another version trades exactly the same,
+        // so it would only fill the board (and the trader total) twice.
+        if (mine.stream().anyMatch(e -> e.getSourceHash().equals(hash))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "You have already entered this strategy: another version you entered "
+                            + "has exactly the same code.");
+        }
+        try {
+            return entries.saveAndFlush(new CompetitionEntry(competitionId, userId, v.getId(),
+                    hash, c.rules()));
+        } catch (DataAccessException e) {
+            // The database's own checks (the entry window trigger, the unique
+            // indexes) said no: the window closed, or this went in twice.
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "That entry could not be saved: the entry window may have just "
+                            + "closed, or it is already entered. Refresh and check.");
+        }
     }
 
     // ═══ Reading ═══════════════════════════════════════════════════════

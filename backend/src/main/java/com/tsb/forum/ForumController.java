@@ -91,10 +91,16 @@ public class ForumController {
      */
     @GetMapping("/images/{id}")
     public ResponseEntity<byte[]> image(@PathVariable long id) {
-        ForumRepository.ImageData img = service.image(id);
+        ForumRepository.ImageData img = service.image(viewer(), id);
+        // Private and for a day, not public for a year: a picture whose post
+        // is later deleted or hidden must stop being served from caches.
+        // A hidden post's pictures (shown only to its author and the
+        // moderators) are never stored at all.
+        CacheControl cache = img.postHidden() ? CacheControl.noStore()
+                : CacheControl.maxAge(Duration.ofDays(1)).cachePrivate();
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(img.contentType()))
-                .cacheControl(CacheControl.maxAge(Duration.ofDays(365)).cachePublic().immutable())
+                .cacheControl(cache)
                 .header("X-Content-Type-Options", "nosniff")
                 .header("Content-Security-Policy", "default-src 'none'")
                 .header(HttpHeaders.CONTENT_DISPOSITION, "inline")

@@ -25,6 +25,7 @@ export const OUTCOME_LABEL: Record<DecisionOutcome, string> = {
   IGNORED_ALREADY_LONG: 'Ignored: already in a position',
   IGNORED_NOTHING_TO_SELL: 'Ignored: nothing to sell',
   REJECTED_TOO_SMALL: 'Rejected: below exchange minimum',
+  REJECTED_NOT_ENOUGH_CASH: 'Rejected: more than the cash available',
   NOT_FILLED_LAST_BAR: 'Last bar: no next open',
   SETTING_APPLIED: 'Setting applied',
 }
@@ -35,5 +36,6 @@ export const BLOCKED: DecisionOutcome[] = [
   'IGNORED_ALREADY_LONG',
   'IGNORED_NOTHING_TO_SELL',
   'REJECTED_TOO_SMALL',
+  'REJECTED_NOT_ENOUGH_CASH',
   'NOT_FILLED_LAST_BAR',
 ]

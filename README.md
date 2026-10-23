@@ -9,8 +9,8 @@ debugger, and fair competition platform. Final Year Project.
 ```
 tsb/
 ├─ backend/     Spring Boot 4.1 monolith (Java 21) — compiler, engine, API
-├─ frontend/    React + TS + Vite (created in Phase 4/5)
-├─ ingestion/   Offline Binance archive ingestion CLI (created in Phase 1)
+├─ frontend/    React 19 + TypeScript + Vite
+├─ strategies/  Example TSL strategies
 └─ docs/adr/    Architecture Decision Records
 ```
 
@@ -27,15 +27,46 @@ by network hops.
 
 ## Run locally
 
-```powershell
-cd backend
-.\mvnw.cmd spring-boot:run
-```
+1. **Start the database** (Postgres 16 in Docker, on port 5433). The backend
+   does not start it for you — start it once, and it keeps running:
 
-Spring Boot's Docker Compose support starts Postgres 16 automatically
-from `backend/compose.yaml`. Verify:
+   ```powershell
+   cd backend
+   docker compose up -d
+   ```
 
-- http://localhost:8080/actuator/health → `{"status":"UP"}`
+2. **Set the token secret** (once per terminal, or as a user environment
+   variable). It signs everyone's sign-in tokens, so it must be long, random
+   and private — never commit it. `application.yml` reads it with
+   `jwt-secret: ${TSB_JWT_SECRET}` (under `tsb.auth`). To make one and keep
+   it for every new terminal:
+
+   ```powershell
+   $b = New-Object byte[] 48
+   [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+   setx TSB_JWT_SECRET ([Convert]::ToBase64String($b))
+   ```
+
+   `setx` applies to terminals opened afterwards; for the current one, also
+   run `$env:TSB_JWT_SECRET = [Convert]::ToBase64String($b)`.
+
+3. **Start the backend:**
+
+   ```powershell
+   .\mvnw.cmd spring-boot:run
+   ```
+
+   Check http://localhost:8080/actuator/health → `{"status":"UP"}`.
+
+4. **Start the frontend** (in a second terminal):
+
+   ```powershell
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+   Open the address it prints (usually http://localhost:5173).
 
 ## Key invariants (do not break these)
 

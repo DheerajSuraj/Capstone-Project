@@ -1,8 +1,12 @@
 package com.tsb.marketdata;
 
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+
+import java.net.http.HttpClient;
+import java.time.Duration;
 
 import java.time.Instant;
 import java.time.YearMonth;
@@ -41,8 +45,18 @@ public class BinanceClient {
     private final RestClient apiClient;
 
     public BinanceClient() {
-        this.archiveClient = RestClient.create(ARCHIVE_BASE);
-        this.apiClient = RestClient.create(API_BASE);
+        // Timeouts on both: without them one half-open connection (the
+        // laptop slept, the Wi-Fi changed) hung the scheduler thread forever,
+        // and with it prices, paper fills, candle sync and competitions.
+        this.archiveClient = client(ARCHIVE_BASE, Duration.ofSeconds(10), Duration.ofSeconds(90));
+        this.apiClient = client(API_BASE, Duration.ofSeconds(5), Duration.ofSeconds(20));
+    }
+
+    private static RestClient client(String base, Duration connect, Duration read) {
+        HttpClient http = HttpClient.newBuilder().connectTimeout(connect).build();
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(http);
+        factory.setReadTimeout(read);
+        return RestClient.builder().baseUrl(base).requestFactory(factory).build();
     }
 
     /** Visible-for-testing constructor: inject stub RestClients. */

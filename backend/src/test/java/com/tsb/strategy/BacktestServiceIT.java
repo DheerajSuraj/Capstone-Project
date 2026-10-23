@@ -87,6 +87,7 @@ class BacktestServiceIT {
                     symbol = TESTUSDT
                     timeframe = 1h
                     capital = 1000
+                    fee = 0%
                     rule r { IF CLOSE > 15 THEN BUY ALL }
                 }
                 """, null, null);

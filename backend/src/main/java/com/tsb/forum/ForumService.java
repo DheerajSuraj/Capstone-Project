@@ -12,7 +12,9 @@ import com.tsb.strategy.StrategyVersion;
 import com.tsb.user.User;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -35,7 +37,9 @@ import java.util.Set;
  * own strategies, where it becomes theirs to edit.
  *
  * <p><b>Limits</b> keep one account from flooding the board: 10 posts an
- * hour, 30 comments every 10 minutes, 4 pictures a post.
+ * hour, 30 comments every 10 minutes, 4 pictures a post. Each check and the
+ * insert it guards run under a per-user lock, so requests sent at the same
+ * moment cannot all slip under the limit.
  */
 @Service
 public class ForumService {
@@ -43,6 +47,9 @@ public class ForumService {
     public static final Set<String> CATEGORIES = Set.of("STRATEGIES", "MARKET", "HELP", "COMPETITIONS");
     public static final int MAX_IMAGES = 4;
     static final int PAGE_SIZE = 20;
+    /** Deepest page served (10,000 posts): a page number like 999999999
+     *  overflowed the offset into a negative number and a database error. */
+    static final int MAX_PAGE = 500;
     static final int POSTS_PER_HOUR = 10;
     static final int COMMENTS_PER_10_MIN = 30;
 
@@ -51,14 +58,17 @@ public class ForumService {
     private final BacktestService backtests;
     private final CompetitionAccess access;
     private final ObjectMapper json;
+    private final TransactionTemplate tx;
 
     public ForumService(ForumRepository repo, StrategyService strategies,
-                        BacktestService backtests, CompetitionAccess access, ObjectMapper json) {
+                        BacktestService backtests, CompetitionAccess access, ObjectMapper json,
+                        PlatformTransactionManager transactions) {
         this.repo = repo;
         this.strategies = strategies;
         this.backtests = backtests;
         this.access = access;
         this.json = json;
+        this.tx = new TransactionTemplate(transactions);
     }
 
     public boolean isModerator(User u) {
@@ -72,9 +82,9 @@ public class ForumService {
 
     public Page list(User viewer, String category, String query, String sort, int page) {
         String cat = category == null || category.isBlank() ? null : checkCategory(category);
-        int p = Math.max(0, page);
+        int p = Math.min(MAX_PAGE, Math.max(0, page));
         List<ForumRepository.PostRow> rows = repo.findPosts(cat, query, "top".equals(sort),
-                PAGE_SIZE + 1, p * PAGE_SIZE, viewer == null ? 0 : viewer.getId(),
+                PAGE_SIZE + 1, (long) p * PAGE_SIZE, viewer == null ? 0 : viewer.getId(),
                 isModerator(viewer));
         boolean more = rows.size() > PAGE_SIZE;
         return new Page(more ? rows.subList(0, PAGE_SIZE) : rows, more);
@@ -94,10 +104,19 @@ public class ForumService {
                 viewer != null && repo.reportedBy(id, viewer.getId()));
     }
 
-    /** Pictures of hidden or deleted posts are not served to anyone. */
-    public ForumRepository.ImageData image(long imageId) {
+    /**
+     * Pictures of deleted posts are served to no one. Pictures of hidden
+     * posts go only to the people who can see the post — its author and the
+     * moderators — the same rule as the post itself (before, the post opened
+     * for them with its pictures broken).
+     */
+    public ForumRepository.ImageData image(User viewer, long imageId) {
         ForumRepository.ImageData img = repo.image(imageId).orElseThrow(this::notFound);
-        if (img.postDeleted() || img.postHidden()) {
+        if (img.postDeleted()) {
+            throw notFound();
+        }
+        if (img.postHidden() && !isModerator(viewer)
+                && (viewer == null || img.postAuthorId() != viewer.getId())) {
             throw notFound();
         }
         return img;
@@ -105,7 +124,14 @@ public class ForumService {
 
     // ── Posting ─────────────────────────────────────────────────────────
 
-    @Transactional
+    /**
+     * Not one transaction: re-drawing pictures and backtesting the shared
+     * strategy take seconds, and a transaction held open that long kept a
+     * database connection from everyone else (ten slow posts at once used
+     * the whole pool). The slow work happens first, outside; then one short
+     * transaction checks the limit again and writes the post and its
+     * pictures together.
+     */
     public long create(User author, String category, String title, String body,
                        Long strategyId, Integer versionNumber, List<byte[]> images) {
         String cat = checkCategory(category);
@@ -120,9 +146,18 @@ public class ForumService {
         if (images != null && images.size() > MAX_IMAGES) {
             throw bad("A post can have at most " + MAX_IMAGES + " pictures.");
         }
-        if (repo.postsSince(author.getId(), Instant.now().minus(Duration.ofHours(1))) >= POSTS_PER_HOUR) {
-            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
-                    "You've posted a lot in the last hour. Please wait a little.");
+        checkPostLimit(author);
+
+        // The cheap checks first: a bad strategy choice is refused before
+        // any picture is decoded.
+        StrategyVersion shared = null;
+        if (strategyId != null) {
+            if (versionNumber == null) {
+                throw bad("Choose which version of the strategy to share.");
+            }
+            shared = strategies.ownedVersion(author.getId(), strategyId, versionNumber)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                            "No such strategy version."));
         }
 
         // Sanitize every picture BEFORE writing anything, so one bad file
@@ -136,24 +171,26 @@ public class ForumService {
                     }
                 }).toList();
 
-        Long versionId = null;
-        String results = null;
-        if (strategyId != null) {
-            if (versionNumber == null) {
-                throw bad("Choose which version of the strategy to share.");
-            }
-            StrategyVersion v = strategies.ownedVersion(author.getId(), strategyId, versionNumber)
-                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
-                            "No such strategy version."));
-            versionId = v.getId();
-            results = snapshot(v);
-        }
+        Long versionId = shared == null ? null : shared.getId();
+        String results = shared == null ? null : snapshot(shared);
 
-        long id = repo.insertPost(author.getId(), cat, t, b, versionId, results);
-        for (int i = 0; i < clean.size(); i++) {
-            repo.insertImage(id, i, clean.get(i));
+        Long id = tx.execute(status -> {
+            repo.lockUser(author.getId());
+            checkPostLimit(author); // again, now that no other post can slip in
+            long postId = repo.insertPost(author.getId(), cat, t, b, versionId, results);
+            for (int i = 0; i < clean.size(); i++) {
+                repo.insertImage(postId, i, clean.get(i));
+            }
+            return postId;
+        });
+        return id == null ? 0 : id;
+    }
+
+    private void checkPostLimit(User author) {
+        if (repo.postsSince(author.getId(), Instant.now().minus(Duration.ofHours(1))) >= POSTS_PER_HOUR) {
+            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
+                    "You've posted a lot in the last hour. Please wait a little.");
         }
-        return id;
     }
 
     /** Backtest the shared version once and keep the headline numbers. */
@@ -194,11 +231,13 @@ public class ForumService {
 
     @Transactional
     public ForumRepository.CommentRow comment(User user, long postId, String body) {
-        visiblePost(user, postId);
         String b = clean(body, 5000);
         if (b.isEmpty()) {
             throw bad("Write a comment first.");
         }
+        repo.lockUser(user.getId());
+        repo.lockPost(postId);
+        visiblePost(user, postId);
         if (repo.commentsSince(user.getId(), Instant.now().minus(Duration.ofMinutes(10)))
                 >= COMMENTS_PER_10_MIN) {
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
@@ -214,17 +253,20 @@ public class ForumService {
         if (ownerAndPost[0] != user.getId() && !isModerator(user)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You can only delete your own comments.");
         }
+        repo.lockPost(ownerAndPost[1]);
         repo.softDeleteComment(commentId, ownerAndPost[1]);
     }
 
     @Transactional
     public int[] toggleLike(User user, long postId) {
+        repo.lockPost(postId);
         visiblePost(user, postId);
         return repo.toggleLike(postId, user.getId());
     }
 
     @Transactional
     public void report(User user, long postId, String reason) {
+        repo.lockPost(postId);
         ForumRepository.PostRow p = visiblePost(user, postId);
         if (p.userId() == user.getId()) {
             throw bad("You can't report your own post — delete it instead.");
@@ -233,7 +275,7 @@ public class ForumService {
         if (r.length() < 3) {
             throw bad("Say briefly what's wrong with the post.");
         }
-        repo.report(postId, user.getId(), r);
+        repo.report(postId, user.getId(), r, access.hasModerators());
     }
 
     @Transactional

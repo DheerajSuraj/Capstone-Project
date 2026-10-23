@@ -62,10 +62,13 @@ public final class Indicators {
     static double[] emaFrom(double[] src, int period, int firstValid) {
         requirePeriod(period);
         double[] out = nanArray(src.length);
-        int seedIndex = firstValid + period - 1;
-        if (seedIndex >= src.length) {
+        // long: a period near Integer.MAX_VALUE overflowed this to a negative
+        // index (an ArrayIndexOutOfBounds 500 from the chart endpoint).
+        long seedAt = (long) firstValid + period - 1;
+        if (seedAt >= src.length) {
             return out;
         }
+        int seedIndex = (int) seedAt;
         double seed = 0;
         for (int i = firstValid; i <= seedIndex; i++) {
             seed += src[i];
@@ -219,11 +222,14 @@ public final class Indicators {
     }
 
     /** Signal line = EMA(signal) of the MACD line, respecting the line's
-     *  NaN prefix. First value at index slow-1 + signal-1. */
+     *  NaN prefix. First value at index max(fast, slow)-1 + signal-1 — the
+     *  line starts where its SLOWER average does, whichever argument that
+     *  is (the analyzer only warns when fast is not the smaller, and the
+     *  chart endpoint takes any order). */
     public static double[] macdSignal(double[] close, int fast, int slow,
                                       int signal) {
         double[] line = macdLine(close, fast, slow);
-        return emaFrom(line, signal, slow - 1);
+        return emaFrom(line, signal, Math.max(fast, slow) - 1);
     }
 
     // ── VWAP (UTC session) ──────────────────────────────────────────────
@@ -271,7 +277,7 @@ public final class Indicators {
     public static double[] wma(double[] src, int period) {
         requirePeriod(period);
         double[] out = nanArray(src.length);
-        double denom = period * (period + 1) / 2.0;
+        double denom = period * (period + 1.0) / 2.0; // int overflowed past 46,340
         for (int i = period - 1; i < src.length; i++) {
             double sum = 0;
             boolean valid = true;
@@ -288,13 +294,15 @@ public final class Indicators {
         return out;
     }
 
-    /** Hull MA: WMA(sqrt(p)) of (2*WMA(p/2) - WMA(p)) — fast AND smooth.
-     *  For a perfectly linear series the extrapolation is exact, which the
-     *  tests exploit as a hand-checkable property. */
+    /** Hull MA: WMA(floor(sqrt(p))) of (2*WMA(p/2) - WMA(p)) — fast AND
+     *  smooth. Floor, as in Hull's definition and TradingView's ta.hma
+     *  (rounding gave HMA(14) a window of 4 instead of 3). For a perfectly
+     *  linear series the extrapolation is exact, which the tests exploit as
+     *  a hand-checkable property. */
     public static double[] hma(double[] src, int period) {
         requirePeriod(period);
         int half = Math.max(1, period / 2);
-        int sqrt = Math.max(1, (int) Math.round(Math.sqrt(period)));
+        int sqrt = Math.max(1, (int) Math.floor(Math.sqrt(period)));
         double[] fast = wma(src, half);
         double[] slow = wma(src, period);
         double[] raw = nanArray(src.length);

@@ -42,34 +42,27 @@ public class LoginRateLimiter {
     }
 
     /**
-     * Throws if this identifier is currently locked out. Called before the
-     * password is checked, so a locked-out caller never reaches BCrypt —
-     * which also stops the endpoint being used to burn CPU.
+     * Reserves one attempt for this identifier, atomically, BEFORE the
+     * password is checked — and throws if that goes over the limit. Counting
+     * only finished failures let 200 guesses sent at once all pass the check
+     * before any of them was recorded. A correct password then clears the
+     * slate ({@link #recordSuccess}), so a reserved attempt that succeeds
+     * costs nothing.
      */
-    public void checkAllowed(String identifier) {
-        Window w = windows.get(key(identifier));
-        if (w == null) return;
-
-        Instant expiresAt = w.startedAt().plus(window);
-        if (Instant.now().isAfter(expiresAt)) {
-            windows.remove(key(identifier));
-            return;
-        }
-        if (w.failures().get() >= maxAttempts) {
-            throw AuthException.rateLimited(
-                    Duration.between(Instant.now(), expiresAt).toSeconds() + 1);
-        }
-    }
-
-    public void recordFailure(String identifier) {
-        windows.compute(key(identifier), (k, existing) -> {
-            Instant now = Instant.now();
+    public void acquire(String identifier) {
+        Instant now = Instant.now();
+        Window w = windows.compute(key(identifier), (k, existing) -> {
             if (existing == null || now.isAfter(existing.startedAt().plus(window))) {
                 return new Window(now, new AtomicInteger(1));
             }
             existing.failures().incrementAndGet();
             return existing;
         });
+        if (w.failures().get() > maxAttempts) {
+            Instant expiresAt = w.startedAt().plus(window);
+            throw AuthException.rateLimited(
+                    Math.max(1, Duration.between(now, expiresAt).toSeconds() + 1));
+        }
     }
 
     /** A correct password clears the slate for that identifier. */

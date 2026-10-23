@@ -1,0 +1,24 @@
+// Breakout (Turtle style): buy when price closes above the highest high of
+// the last 20 candles; get out when it closes below the lowest low of the
+// last 10. A trailing stop locks in part of a big run.
+strategy "Breakout" {
+    symbol = BTCUSDT
+    timeframe = 4h
+    capital = 10000
+    fee = 0.1%
+
+    let upper = DONCHIAN_UPPER(20)
+    let lower = DONCHIAN_LOWER(10)
+
+    rule entry {
+        IF CLOSE > upper[1] AND ADX(14) > 20 THEN BUY ALL
+    }
+
+    rule exit {
+        IF CLOSE < lower[1] THEN SELL ALL
+    }
+
+    rule protect {
+        IF CLOSE > 0 THEN SET TRAILING = 10%
+    }
+}

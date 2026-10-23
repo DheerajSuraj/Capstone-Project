@@ -209,6 +209,28 @@ class DecisionExplainerTest {
     }
 
     @Nested
+    @DisplayName("no answer runs neither branch")
+    class NoAnswer {
+
+        @Test
+        @DisplayName("a condition with no answer takes no branch, here and in the engine")
+        void unknownTakesNoBranch() {
+            // OPEN - OPEN is 0: the comparison has no answer on any candle.
+            CompiledStrategy s = compile(
+                    "rule entry { IF CLOSE / (OPEN - OPEN) > 1 THEN SELL ALL ELSE BUY ALL }");
+            DecisionExplainer ex = new DecisionExplainer(s, series(CLOSES),
+                    ExchangeRules.none());
+            Explanation.Statement e = entry(ex.explain(2));
+            assertTrue(e.condition().unknown());
+            assertEquals(Explanation.Branch.NONE, e.taken());
+            assertEquals(Explanation.Outcome.NO_ACTION, e.outcome());
+            assertTrue(e.sentence().contains("neither true nor false"), e.sentence());
+            assertEquals(0, new Backtester().run(s, series(CLOSES), ExchangeRules.none())
+                    .trades().size());
+        }
+    }
+
+    @Nested
     @DisplayName("numbers and the closest change")
     class Numbers {
 
@@ -285,5 +307,139 @@ class DecisionExplainerTest {
         assertEquals(Optional.of(2), ex.barAt(2 * 3_600_000L + 1_000));
         assertEquals(Optional.of(7), ex.barAt(99 * 3_600_000L));
         assertEquals(Optional.empty(), ex.barAt(-1));
+    }
+
+    // ── Bigger timeframes ───────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("bigger timeframes")
+    class BiggerTimeframes {
+
+        @Test
+        @DisplayName("a part that reads ON 4h says which finished 4h candle it used")
+        void namesTheCandle() {
+            double[] closes = new double[40];
+            for (int i = 0; i < closes.length; i++) {
+                closes[i] = 100 + (i % 7);
+            }
+            DecisionExplainer ex = new DecisionExplainer(
+                    compile("rule a { IF CLOSE > CLOSE ON 4h THEN BUY ALL }"),
+                    series(closes), ExchangeRules.none());
+            // Candle 10 is 10:00–11:00; the 08:00–12:00 4h candle is still
+            // forming, so the value must come from 04:00–08:00.
+            ConditionNode leaf = entry(ex.explain(10)).condition();
+            assertTrue(leaf.timeframeNote().contains("04:00–08:00"), leaf.timeframeNote());
+            assertTrue(leaf.timeframeNote().contains("never the one still forming"));
+            assertEquals(closes[7], leaf.right(), 1e-12, "the 4h close is the 07:00 candle's close");
+            // Candle 2 (02:00–03:00): no 4h candle has finished.
+            assertTrue(entry(ex.explain(2)).condition().timeframeNote().startsWith("No 4h candle"));
+        }
+
+        @Test
+        @DisplayName("parts on the strategy's own candles carry no timeframe note")
+        void plainHasNone() {
+            assertEquals(null, entry(scenario().explain(5)).condition().children().get(0).timeframeNote());
+        }
+    }
+
+    @Nested
+    @DisplayName("the account at the clicked candle (TradAO's cash usage)")
+    class Account {
+
+        private static final double FEE = 0.001; // the language's default fee
+
+        @Test
+        @DisplayName("before any trade: all cash, nothing held")
+        void flat() {
+            Explanation.Book b = scenario().explain(1).book();
+            assertEquals(1000, b.equity(), 1e-9);
+            assertEquals(1000, b.cash(), 1e-9);
+            assertEquals(0, b.qty(), 0.0);
+            assertEquals(0, b.cashUsagePct(), 1e-9);
+            assertNull(b.entryPrice());
+            assertTrue(scenario().explain(1).fills().isEmpty());
+        }
+
+        @Test
+        @DisplayName("the buy shows on the candle whose open it filled at, and the cash moves into the coin")
+        void buyCandle() {
+            Explanation.Bar bar = scenario().explain(3);
+            double qty = 1000 / (12.5 * (1 + FEE));
+            assertEquals(1, bar.fills().size());
+            Explanation.Fill f = bar.fills().get(0);
+            assertEquals("BUY", f.side());
+            assertEquals("OPEN", f.when());
+            assertEquals(12.5, f.price(), 1e-12);
+            assertEquals(qty, f.qty(), 1e-9);
+            assertEquals(qty * 12.5 * FEE, f.fee(), 1e-9);
+
+            Explanation.Book b = bar.book();
+            assertEquals(qty, b.qty(), 1e-9);
+            assertEquals(0, b.cash(), 1e-6);
+            assertEquals(qty * 13, b.equity(), 1e-6);           // close 13
+            assertEquals(100, b.cashUsagePct(), 1e-6);
+            assertEquals(12.5, b.entryPrice(), 1e-12);
+            assertEquals(qty * 0.5, b.unrealizedPnl(), 1e-6);
+            assertEquals(4, b.unrealizedPct(), 1e-9);            // 13 / 12.5
+        }
+
+        @Test
+        @DisplayName("the sell shows its profit, and it counts as realized from then on")
+        void sellCandle() {
+            DecisionExplainer x = scenario();
+            Explanation.Bar bar = x.explain(6);
+            Explanation.Fill f = bar.fills().get(0);
+            assertEquals("SELL", f.side());
+            assertEquals("SIGNAL", f.reason());
+            assertEquals(13.5, f.price(), 1e-12);
+            double pnl = x.result().trades().get(0).pnl();
+            assertEquals(pnl, f.pnl(), 1e-9);
+            Explanation.Book b = bar.book();
+            assertEquals(0, b.qty(), 0.0);
+            assertEquals(1, b.closedTrades());
+            assertEquals(pnl, b.realizedPnl(), 1e-9);
+            assertEquals(1000 + pnl, b.cash(), 1e-6);
+            assertEquals(0, x.explain(5).book().closedTrades(), "still open at bar 5");
+        }
+
+        @Test
+        @DisplayName("a stop hit on the entry candle comes after the buy, and the levels show while holding")
+        void stopOnEntryCandle() {
+            CompiledStrategy s = compile("""
+                    rule a { IF CLOSE > 0 THEN BUY ALL }
+                    rule b { IF CLOSE > 0 THEN SET STOPLOSS = 10% }
+                    rule c { IF CLOSE > 0 THEN SET TAKEPROFIT = 50% }
+                    """);
+            // bar 1 opens at 100 (buy), dips to 85: the 10% stop at 90 fires.
+            CandleSeries c = new CandleSeries(new long[]{0, 3_600_000L, 7_200_000L, 10_800_000L},
+                    new double[]{100, 100, 95, 96}, new double[]{100, 101, 97, 99},
+                    new double[]{100, 85, 94, 95}, new double[]{100, 95, 96, 98},
+                    new double[]{1, 1, 1, 1});
+            DecisionExplainer x = new DecisionExplainer(s, c, ExchangeRules.none());
+            List<Explanation.Fill> fills = x.explain(1).fills();
+            assertEquals(2, fills.size());
+            assertEquals("BUY", fills.get(0).side());
+            assertEquals("SELL", fills.get(1).side());
+            assertEquals("INSIDE", fills.get(1).when());
+            assertEquals("STOPLOSS", fills.get(1).reason());
+            assertEquals(90, fills.get(1).price(), 1e-9);
+
+            // Bought again at bar 2's open (95): the levels from then on.
+            Explanation.Book held = x.explain(2).book();
+            assertEquals(95, held.entryPrice(), 1e-12);
+            assertEquals(95 * 0.9, held.stopPrice(), 1e-9);
+            assertEquals(95 * 1.5, held.takeProfitPrice(), 1e-9);
+            assertNull(held.trailingPrice());
+        }
+
+        @Test
+        @DisplayName("buy & hold at the candle agrees with the headline number at the end")
+        void benchmarkAgrees() {
+            DecisionExplainer x = scenario();
+            int last = CLOSES.length - 1;
+            assertEquals(com.tsb.execution.Benchmark.returnPct(x.series(), 0, FEE),
+                    x.explain(last).book().buyHoldPct(), 1e-9);
+            assertEquals(0.0, x.explain(0).book().buyHoldPct(), 1e-12, "before it buys");
+        }
     }
 }

@@ -16,28 +16,51 @@ public final class Sizing {
     private Sizing() {
     }
 
-    /** How much to buy with this sizing, leaving room for the fee. */
+    /**
+     * How much to buy with this sizing.
+     *
+     * <p>{@code BUY ALL} and {@code BUY qty = 25% OF EQUITY} spend a budget
+     * and leave room for the fee inside it. {@code BUY qty = 0.5} asks for
+     * exactly 0.5 of the coin — the fee is paid on top, as on an exchange —
+     * and the engine checks it can be afforded ({@link #affordable}).
+     * Buying happens only when flat, so equity is cash at that moment.
+     */
     public static double desiredBuyQty(StrategyAst.Sizing sizing, double cash,
                                        double price, double fee) {
-        double budget = switch (sizing) {
-            case StrategyAst.Sizing.All ignored -> cash;
+        return switch (sizing) {
+            case StrategyAst.Sizing.All ignored -> cash / (price * (1 + fee));
             case StrategyAst.Sizing.PercentOf p ->
-                    cash * ((Expr.PercentLit) p.percent()).value() / 100.0;
-            case StrategyAst.Sizing.Quantity q -> {
-                double amount = ConstFold.fold(q.amount()).orElse(0.0);
-                yield amount * price; // fixed base-asset qty -> its notional
-            }
+                    cash * ((Expr.PercentLit) p.percent()).value() / 100.0
+                            / (price * (1 + fee));
+            case StrategyAst.Sizing.Quantity q -> ConstFold.fold(q.amount()).orElse(0.0);
         };
-        // Budget covers notional + fee: qty*price*(1+fee) <= budget.
-        return budget / (price * (1 + fee));
     }
 
-    /** How much of a held quantity to sell with this sizing. */
-    public static double desiredSellQty(StrategyAst.Sizing sizing, double held) {
+    /** Whether {@code qty} at {@code price}, plus the fee, fits in the cash.
+     *  A spot exchange refuses an order it can't cover; the engines do too
+     *  (before this, a fixed {@code BUY qty = 2} on 10,000 USDT bought
+     *  120,000 USDT of BTC and left cash at minus 110,000). */
+    public static boolean affordable(double qty, double cash, double price, double fee) {
+        return qty * price * (1 + fee) <= cash * (1 + 1e-12);
+    }
+
+    /**
+     * How much of a held quantity to sell with this sizing.
+     *
+     * @param equity what the account is worth at {@code price} (cash plus
+     *               the position) — for {@code SELL qty = 25% OF EQUITY},
+     *               which sells coins worth a quarter of the account
+     */
+    public static double desiredSellQty(StrategyAst.Sizing sizing, double held,
+                                        double equity, double price) {
         return switch (sizing) {
             case StrategyAst.Sizing.All ignored -> held;
-            case StrategyAst.Sizing.PercentOf p ->
-                    held * ((Expr.PercentLit) p.percent()).value() / 100.0;
+            case StrategyAst.Sizing.PercentOf p -> {
+                double pct = ((Expr.PercentLit) p.percent()).value() / 100.0;
+                yield p.base() == StrategyAst.Sizing.Base.POSITION
+                        ? held * pct
+                        : Math.min(held, equity * pct / price);
+            }
             case StrategyAst.Sizing.Quantity q ->
                     ConstFold.fold(q.amount()).orElse(0.0);
         };

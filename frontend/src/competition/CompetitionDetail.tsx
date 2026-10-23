@@ -12,9 +12,11 @@ import {
   money,
   pnlClass,
   relative,
+  shownRanks,
   signedMoney,
   signedPct,
   STATUS_LABEL,
+  syncClock,
   when,
 } from './util'
 
@@ -29,6 +31,7 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
   const load = useCallback(async () => {
     try {
       const [d, b] = await Promise.all([api.competition(id), api.leaderboard(id)])
+      syncClock(b.serverTime ?? d.serverTime)
       setDetail(d)
       setBoard(b)
       setError(null)
@@ -54,9 +57,14 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
 
   const c = detail.competition
   const r = c.rules
+  // No places before the first candle has been played, and none when cancelled.
+  const ranks = shownRanks(board?.entries ?? [], board?.lastCandle != null, c.status === 'CANCELLED')
 
   const cancel = async () => {
-    if (!window.confirm('Cancel this competition? Nobody will be able to enter.')) return
+    const question = c.status === 'RUNNING'
+      ? 'Stop this competition now? Entries keep their results so far, no more candles are played, and nobody wins.'
+      : 'Cancel this competition? Nobody will be able to enter.'
+    if (!window.confirm(question)) return
     try {
       await api.cancelCompetition(c.id)
       load()
@@ -89,9 +97,9 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
           </div>
           {detail.description && <p className="tsb-cmp__muted">{detail.description}</p>}
         </div>
-        {detail.isAdmin && c.status === 'OPEN' && (
+        {detail.canCancel && (c.status === 'OPEN' || c.status === 'RUNNING') && (
           <button type="button" className="ghost" onClick={cancel}>
-            Cancel competition
+            {c.status === 'RUNNING' ? 'Stop competition' : 'Cancel competition'}
           </button>
         )}
       </header>
@@ -118,6 +126,7 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
         <p className="tsb-cmp__muted tsb-small">
           {when(c.startsAt)} → {when(c.endsAt)}. Every new {c.timeframe} candle, each entry's
           strategy is checked; an order fills at the next candle's open, the same way backtests work.
+          A stop-loss the price jumps past fills at the price it opened at, not at the stop.
         </p>
       </section>
 
@@ -129,7 +138,7 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
           <div className="tsb-cmp__dashes">
             {detail.myEntries.map((e) => {
               const live = board?.entries.find((x) => x.id === e.id) ?? e
-              return <EntryDashboard key={e.id} e={live} />
+              return <EntryDashboard key={e.id} e={live} rank={ranks.get(live) ?? null} />
             })}
           </div>
         </section>
@@ -177,7 +186,7 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
                         className={`${e.mine ? 'is-mine' : ''} is-clickable`}
                         onClick={() => setOpenEntry(openEntry === e.id ? null : e.id)}
                       >
-                        <td>{medal(e.rank)}</td>
+                        <td>{medal(ranks.get(e) ?? null)}</td>
                         <td>{e.username}{e.mine && ' (you)'}</td>
                         <td>{e.strategy}</td>
                         <td>
@@ -218,7 +227,7 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
                 <tbody>
                   {board.traders.map((t) => (
                     <tr key={t.username} className={t.mine ? 'is-mine' : undefined}>
-                      <td>{medal(t.rank)}</td>
+                      <td>{board.lastCandle != null && c.status !== 'CANCELLED' ? medal(t.rank) : '—'}</td>
                       <td>{t.username}{t.mine && ' (you)'}</td>
                       <td className="num">{t.entries}</td>
                       <td className="num">{t.passed}</td>

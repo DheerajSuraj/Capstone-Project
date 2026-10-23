@@ -1,0 +1,25 @@
+// RSI Dip Buyer: in an uptrend, buy short, sharp dips (RSI below 30) and
+// sell the bounce (RSI back above 55). Small stop and target because these
+// are quick trades.
+strategy "RSI Dip Buyer" {
+    symbol = BTCUSDT
+    timeframe = 1h
+    capital = 10000
+    fee = 0.1%
+
+    let rsi = RSI(14)
+    let trend = SMA(CLOSE, 200)
+
+    rule entry {
+        IF rsi < 30 AND CLOSE > trend THEN BUY ALL
+    }
+
+    rule exit {
+        IF rsi > 55 THEN SELL ALL
+    }
+
+    rule protect {
+        IF CLOSE > 0 THEN SET STOPLOSS = 4%
+        IF CLOSE > 0 THEN SET TAKEPROFIT = 6%
+    }
+}

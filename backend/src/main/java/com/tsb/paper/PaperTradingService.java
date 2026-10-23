@@ -74,6 +74,14 @@ public class PaperTradingService {
 
     @Transactional
     public PaperOrder place(long userId, PlaceCommand c) {
+        // Before ANY arithmetic or lock: a 12-character literal like
+        // 1e300000000 would otherwise make one division write out 300 million
+        // digits, holding the wallet lock and a database connection while it
+        // ran (a few in parallel stalled the whole server).
+        checkAmount(c.qty(), "The amount");
+        checkAmount(c.quoteAmount(), "The amount");
+        checkAmount(c.limitPrice(), "The limit price");
+
         PaperAccount account = lockOrCreate(userId);
         Symbol symbol = tradable(c.symbol());
         BigDecimal market = livePrice(symbol.getTicker());
@@ -86,6 +94,10 @@ public class PaperTradingService {
                 throw bad("A limit order needs a limit price above zero.");
             }
             limitPrice = c.limitPrice().setScale(PaperMath.MONEY, RoundingMode.HALF_EVEN);
+            // Checked AFTER rounding: 0.000000001 rounds to zero.
+            if (limitPrice.signum() <= 0 || limitPrice.compareTo(MAX_PRICE) >= 0) {
+                throw bad("That limit price is out of range.");
+            }
         }
         boolean marketable = !limit || (buy ? limitPrice.compareTo(market) >= 0
                 : limitPrice.compareTo(market) <= 0);
@@ -104,20 +116,29 @@ public class PaperTradingService {
             throw bad("That amount is smaller than the smallest tradable unit ("
                     + plain(step) + " " + symbol.getBaseAsset() + ").");
         }
-        BigDecimal value = PaperMath.notional(qty, refPrice);
-        if (value.compareTo(symbol.getMinNotional()) < 0) {
-            throw bad("Orders must be worth at least " + plain(symbol.getMinNotional()) + " "
-                    + symbol.getQuoteAsset() + ". " + symbol.getBaseAsset() + " is traded in steps of "
-                    + plain(step) + ", so this came to " + money(value) + ".");
-        }
 
-        // Only the part that opens or grows a position needs buying power.
+        // Only the part that opens or grows a position has to clear the
+        // exchange minimum and fit the buying power. Closing is always
+        // allowed — a 4 USDT leftover must still be sellable.
         PaperMath.Book book = book(userId, symbol.getId());
         BigDecimal opening = openingPart(book, buy, qty);
+        BigDecimal closing = qty.subtract(opening);
         if (opening.signum() > 0) {
-            BigDecimal need = PaperMath.notional(opening, refPrice);
-            need = need.add(PaperMath.fee(need));
-            BigDecimal power = buyingPower(account, openOrders(userId), null);
+            BigDecimal value = PaperMath.notional(opening, refPrice);
+            if (value.compareTo(symbol.getMinNotional()) < 0) {
+                throw bad((closing.signum() > 0
+                        ? "After closing your position, the new part of this order is worth "
+                        : "Orders must be worth at least " + plain(symbol.getMinNotional()) + " "
+                                + symbol.getQuoteAsset() + ". This one is worth ")
+                        + money(value) + " " + symbol.getQuoteAsset()
+                        + (closing.signum() > 0 ? ", below the " + plain(symbol.getMinNotional())
+                                + " " + symbol.getQuoteAsset() + " minimum. To just close, "
+                                + "use Close or trade exactly " + plain(book.qty()) + " "
+                                + symbol.getBaseAsset() + "." : ". "
+                                + symbol.getBaseAsset() + " is traded in steps of " + plain(step) + "."));
+            }
+            BigDecimal need = value.add(PaperMath.fee(value));
+            BigDecimal power = powerFor(account, userId, null, closing, refPrice);
             if (need.compareTo(power) > 0) {
                 throw bad("Not enough buying power: this needs " + money(need) + " USDT and you have "
                         + money(power) + ". With 1× leverage, everything you hold — long and short — "
@@ -131,6 +152,37 @@ public class PaperTradingService {
             fill(account, order, market, false);
         }
         return order;
+    }
+
+    /** Below 10^12 (the price column holds 12 digits before the point). */
+    private static final BigDecimal MAX_PRICE = new BigDecimal("1000000000000");
+
+    /** A sane number: at most 15 digits before the point and 12 after. */
+    private static void checkAmount(BigDecimal v, String what) {
+        if (v == null) {
+            return;
+        }
+        BigDecimal t = v.stripTrailingZeros();
+        if (t.scale() > 12 || t.precision() - t.scale() > 15) {
+            throw bad(what + " is out of range.");
+        }
+    }
+
+    /**
+     * Buying power for an order, counting what it frees up first: the part
+     * of a flip that closes the current position stops counting as exposure
+     * (minus its closing fee) before the new side is opened. Without this a
+     * flip within 1× was refused, because the position it was about to close
+     * still used the power.
+     */
+    private BigDecimal powerFor(PaperAccount account, long userId, Long excludeOrder,
+                                BigDecimal closingQty, BigDecimal price) {
+        BigDecimal raw = rawBuyingPower(account, openOrders(userId), excludeOrder);
+        if (closingQty.signum() > 0) {
+            BigDecimal freed = PaperMath.notional(closingQty, price);
+            raw = raw.add(freed).subtract(PaperMath.fee(freed));
+        }
+        return raw.max(BigDecimal.ZERO);
     }
 
     /** Close a whole position at market: the ✕ on the chart and the table. */
@@ -165,7 +217,8 @@ public class PaperTradingService {
             if (opening.signum() > 0) {
                 BigDecimal need = PaperMath.notional(opening, price);
                 need = need.add(PaperMath.fee(need));
-                if (need.compareTo(buyingPower(account, openOrders(userId), order.getId())) > 0) {
+                BigDecimal closing = order.getQty().subtract(opening);
+                if (need.compareTo(powerFor(account, userId, order.getId(), closing, price)) > 0) {
                     order.rejected("Not enough buying power when the price was reached.");
                     orders.save(order);
                     return;
@@ -212,7 +265,7 @@ public class PaperTradingService {
     }
 
     public List<PaperOrder> openOrders() {
-        return orders.findByStatus(PaperOrder.Status.OPEN.name());
+        return orders.findByStatusOrderByCreatedAtAsc(PaperOrder.Status.OPEN.name());
     }
 
     // ── Cancel & reset ──────────────────────────────────────────────────
@@ -273,8 +326,8 @@ public class PaperTradingService {
 
     @Transactional
     public AccountView view(long userId) {
-        PaperAccount a = accounts.findById(userId)
-                .orElseGet(() -> accounts.save(new PaperAccount(userId, PaperMath.STARTING_CASH)));
+        accounts.insertIfMissing(userId, PaperMath.STARTING_CASH);
+        PaperAccount a = accounts.findById(userId).orElseThrow();
         Map<Long, Symbol> bySymbol = symbolsById();
         Map<String, Double> live = new TreeMap<>();
         prices.freshQuotes().forEach((k, q) -> live.put(k, q.price()));
@@ -285,8 +338,11 @@ public class PaperTradingService {
         for (PaperPosition p : positions.findByUserIdOrderBySymbolIdAsc(userId)) {
             Symbol s = bySymbol.get(p.getSymbolId());
             PaperMath.Book b = p.book();
-            Double price = s == null ? null : live.get(s.getTicker());
-            // No live price: value it at its entry price, and say so, rather than guess.
+            Double fresh = s == null ? null : live.get(s.getTicker());
+            // No fresh price: value it at the last price we saw (and say it
+            // isn't live); only with no price ever, at its entry price.
+            Double price = fresh != null ? fresh : s == null ? null
+                    : prices.last(s.getTicker()).map(LivePriceFeed.Quote::price).orElse(null);
             BigDecimal mark = price != null ? BigDecimal.valueOf(price) : b.avgPrice();
             BigDecimal pnl = PaperMath.unrealized(b, mark);
             signed = signed.add(PaperMath.signedValue(b, mark));
@@ -297,18 +353,15 @@ public class PaperTradingService {
                     b.entryFees(), price, PaperMath.notional(b.qty(), mark).doubleValue(),
                     pnl.doubleValue(),
                     entryValue.signum() == 0 ? 0 : pnl.doubleValue() / entryValue.doubleValue() * 100,
-                    price != null));
+                    fresh != null));
         }
 
         List<PaperOrder> open = openOrders(userId);
         BigDecimal equity = a.getCash().add(signed);
-        BigDecimal reserved = reserved(open, null);
+        BigDecimal reserved = reserved(open, null, books(userId));
         BigDecimal power = PaperMath.buyingPower(equity, gross(userId, bySymbol, live), reserved);
-        List<OrderView> history = orders
-                .findByUserIdAndCreatedAtGreaterThanEqualOrderByCreatedAtDesc(userId,
-                        a.getResetAt(), PageRequest.of(0, 50))
-                .stream().filter(o -> o.status() != PaperOrder.Status.OPEN)
-                .map(o -> orderView(o, bySymbol)).toList();
+        List<OrderView> history = orders.history(userId, a.getResetAt(), PageRequest.of(0, 50))
+                .stream().map(o -> orderView(o, bySymbol)).toList();
 
         double start = a.getStartingCash().doubleValue();
         return new AccountView(a.getStartingCash(), a.getCash(), equity.doubleValue(),
@@ -335,8 +388,9 @@ public class PaperTradingService {
 
     // ── Buying power ────────────────────────────────────────────────────
 
-    /** Buying power now, optionally ignoring one order's own reservation. */
-    private BigDecimal buyingPower(PaperAccount a, List<PaperOrder> open, Long excludeOrder) {
+    /** Buying power now, optionally ignoring one order's own reservation —
+     *  not clamped at zero, so a credit can be added before comparing. */
+    private BigDecimal rawBuyingPower(PaperAccount a, List<PaperOrder> open, Long excludeOrder) {
         Map<Long, Symbol> bySymbol = symbolsById();
         Map<String, Double> live = new TreeMap<>();
         prices.freshQuotes().forEach((k, q) -> live.put(k, q.price()));
@@ -345,8 +399,17 @@ public class PaperTradingService {
             signed = signed.add(PaperMath.signedValue(p.book(), mark(p, bySymbol, live)));
         }
         BigDecimal equity = a.getCash().add(signed);
-        return PaperMath.buyingPower(equity, gross(a.getUserId(), bySymbol, live),
-                reserved(open, excludeOrder));
+        return equity.subtract(gross(a.getUserId(), bySymbol, live))
+                .subtract(reserved(open, excludeOrder, books(a.getUserId())));
+    }
+
+    /** Each symbol's current position. */
+    private Map<Long, PaperMath.Book> books(long userId) {
+        Map<Long, PaperMath.Book> out = new java.util.HashMap<>();
+        for (PaperPosition p : positions.findByUserIdOrderBySymbolIdAsc(userId)) {
+            out.put(p.getSymbolId(), p.book());
+        }
+        return out;
     }
 
     /** Everything held, long and short, at today's price. */
@@ -358,19 +421,35 @@ public class PaperTradingService {
         return g;
     }
 
-    private static BigDecimal mark(PaperPosition p, Map<Long, Symbol> bySymbol, Map<String, Double> live) {
+    /** The price to VALUE a position at: fresh if we have it, else the last
+     *  one seen (a stale SOL quote while SOL is down 50% must not hide the
+     *  loss behind the entry price), else the entry price. */
+    private BigDecimal mark(PaperPosition p, Map<Long, Symbol> bySymbol, Map<String, Double> live) {
         Symbol s = bySymbol.get(p.getSymbolId());
         Double price = s == null ? null : live.get(s.getTicker());
+        if (price == null && s != null) {
+            price = prices.last(s.getTicker()).map(LivePriceFeed.Quote::price).orElse(null);
+        }
         return price != null ? BigDecimal.valueOf(price) : p.book().avgPrice();
     }
 
-    /** What open limit orders have promised (value + fee at their limit). */
-    static BigDecimal reserved(List<PaperOrder> open, Long exclude) {
+    /**
+     * What open limit orders have promised: value + fee at their limit, for
+     * the part of each that would OPEN or grow a position. A take-profit
+     * that only closes a position reserves nothing — before, a limit sell
+     * of a held long reserved its full value and left buying power at zero.
+     */
+    static BigDecimal reserved(List<PaperOrder> open, Long exclude,
+                               Map<Long, PaperMath.Book> books) {
         BigDecimal r = BigDecimal.ZERO;
         for (PaperOrder o : open) {
             if (o.getLimitPrice() != null && !o.getId().equals(exclude)) {
-                BigDecimal v = PaperMath.notional(o.getQty(), o.getLimitPrice());
-                r = r.add(v).add(PaperMath.fee(v));
+                PaperMath.Book book = books.getOrDefault(o.getSymbolId(), PaperMath.Book.FLAT);
+                BigDecimal opening = openingPart(book, o.side() == PaperOrder.Side.BUY, o.getQty());
+                if (opening.signum() > 0) {
+                    BigDecimal v = PaperMath.notional(opening, o.getLimitPrice());
+                    r = r.add(v).add(PaperMath.fee(v));
+                }
             }
         }
         return r;
@@ -401,10 +480,8 @@ public class PaperTradingService {
     }
 
     private PaperAccount lockOrCreate(long userId) {
-        return accounts.lock(userId).orElseGet(() -> {
-            accounts.saveAndFlush(new PaperAccount(userId, PaperMath.STARTING_CASH));
-            return accounts.lock(userId).orElseThrow();
-        });
+        accounts.insertIfMissing(userId, PaperMath.STARTING_CASH);
+        return accounts.lock(userId).orElseThrow();
     }
 
     private Symbol tradable(String ticker) {

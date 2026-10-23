@@ -5,8 +5,12 @@ import { ENTRY_LABEL, money, pnlClass, signedPct } from './util'
  * "Your rule dashboard": how close an entry is to each rule, as meters.
  * Target fills toward passing; the limits fill toward trouble.
  */
-export default function EntryDashboard({ e }: { e: EntryViewDto }) {
-  const progress = Math.max(0, (e.returnPct / e.profitTargetPct) * 100)
+export default function EntryDashboard({ e, rank }: { e: EntryViewDto; rank?: number | null }) {
+  // The target is judged after the fee for selling what is still held, so
+  // the meter counts that fee too (before, it could read 100% while the
+  // entry would still fail by the fee).
+  const afterFee = e.returnAfterExitFeePct ?? e.returnPct
+  const progress = Math.max(0, (afterFee / e.profitTargetPct) * 100)
   return (
     <div className={`tsb-dash is-${e.status.toLowerCase()}`}>
       <div className="tsb-dash__head">
@@ -30,7 +34,7 @@ export default function EntryDashboard({ e }: { e: EntryViewDto }) {
         </div>
         <div>
           <div className="tsb-cmp__muted tsb-small">Rank</div>
-          <div className="tsb-dash__big">{e.rank ?? '—'}</div>
+          <div className="tsb-dash__big">{(rank === undefined ? e.rank : rank) ?? '—'}</div>
         </div>
         <div>
           <div className="tsb-cmp__muted tsb-small">Now</div>
@@ -43,7 +47,7 @@ export default function EntryDashboard({ e }: { e: EntryViewDto }) {
 
       <div className="tsb-dash__meters">
         <Meter label="Profit target" good value={progress}
-          text={`${signedPct(e.returnPct)} of +${e.profitTargetPct}%`} />
+          text={`${signedPct(afterFee)} of +${e.profitTargetPct}%${e.inTrade ? ' (if sold now, after the fee)' : ''}`} />
         <Meter label="Drawdown used" value={(e.drawdownPct / e.maxDrawdownPct) * 100}
           text={`${e.drawdownPct.toFixed(2)}% of ${e.maxDrawdownPct}% (worst ${e.maxDrawdownSeen.toFixed(2)}%)`} />
         {e.dailyLossLimitPct > 0 && (

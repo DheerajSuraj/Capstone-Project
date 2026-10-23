@@ -9,7 +9,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.YearMonth;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Orchestrates candle ingestion. One service, two entry points that share
@@ -49,37 +53,62 @@ public class IngestionService {
         this.jdbc = jdbc;
     }
 
+    /** One lock per symbol/timeframe: the startup catch-up, the 5-minute
+     *  sync and a backfill can otherwise work on the same pair at once and
+     *  miscount each other's rows. */
+    private final Map<String, ReentrantLock> pairLocks = new ConcurrentHashMap<>();
+
+    private ReentrantLock lockFor(String ticker, String timeframe) {
+        return pairLocks.computeIfAbsent(ticker + "/" + timeframe, k -> new ReentrantLock());
+    }
+
     /** Bulk historical load: monthly archives, then a REST top-up. */
     public void backfill(String ticker, String timeframe, int months) {
         Symbol symbol = requireSymbol(ticker);
         Timeframes.durationOf(timeframe); // validate early
-        writer.ensurePartition(symbol.getId());
+        ReentrantLock lock = lockFor(ticker, timeframe);
+        lock.lock();
+        try {
+            writer.ensurePartition(symbol.getId());
 
-        YearMonth firstMonth = YearMonth.now(ZoneOffset.UTC).minusMonths(months);
-        YearMonth lastArchiveMonth = YearMonth.now(ZoneOffset.UTC).minusMonths(1);
+            YearMonth firstMonth = YearMonth.now(ZoneOffset.UTC).minusMonths(months);
+            YearMonth lastArchiveMonth = YearMonth.now(ZoneOffset.UTC).minusMonths(1);
+            // Where the archives we actually have stop. The REST top-up starts
+            // HERE, not at the newest bar in the table: if the scheduler had
+            // already stored the last few days, resuming from the table's
+            // newest bar skipped everything between the archives and them —
+            // a permanent hole.
+            Instant coveredUntil = firstMonth.atDay(1).atStartOfDay(ZoneOffset.UTC).toInstant();
 
-        for (YearMonth month = firstMonth; !month.isAfter(lastArchiveMonth);
-             month = month.plusMonths(1)) {
-            String file = BinanceClient.archiveFileName(ticker, timeframe, month);
-            if (alreadyIngested(symbol.getId(), timeframe, file)) {
-                log.info("skip {} (already ingested)", file);
-                continue;
+            for (YearMonth month = firstMonth; !month.isAfter(lastArchiveMonth);
+                 month = month.plusMonths(1)) {
+                String file = BinanceClient.archiveFileName(ticker, timeframe, month);
+                Instant monthEnd = month.plusMonths(1).atDay(1).atStartOfDay(ZoneOffset.UTC)
+                        .toInstant();
+                if (alreadyIngested(symbol.getId(), timeframe, file)) {
+                    log.info("skip {} (already ingested)", file);
+                    coveredUntil = monthEnd;
+                    continue;
+                }
+                List<CandleBar> bars = binance.fetchMonthlyArchive(ticker, timeframe, month);
+                if (bars.isEmpty()) {
+                    log.info("no archive for {} (not listed yet, or not published yet)", file);
+                    continue;
+                }
+                checkOrdering(bars, file);
+                int inserted = writer.upsertBatch(symbol.getId(), timeframe, bars);
+                logIngestion(symbol.getId(), timeframe, file, inserted);
+                log.info("{}: {} bars parsed, {} new", file, bars.size(), inserted);
+                coveredUntil = monthEnd;
             }
-            List<CandleBar> bars = binance.fetchMonthlyArchive(ticker, timeframe, month);
-            if (bars.isEmpty()) {
-                log.info("no archive for {} (symbol not listed yet?)", file);
-                continue;
-            }
-            checkOrdering(bars, file);
-            int inserted = writer.upsertBatch(symbol.getId(), timeframe, bars);
-            logIngestion(symbol.getId(), timeframe, file, inserted);
-            log.info("{}: {} bars parsed, {} new", file, bars.size(), inserted);
+
+            // REST covers the rest, from where the archives stopped to now.
+            int added = fetchAndStore(symbol, timeframe, coveredUntil);
+            log.info("{} {} backfill complete: +{} bars by REST, {} bars in table",
+                    ticker, timeframe, added, writer.count(symbol.getId(), timeframe));
+        } finally {
+            lock.unlock();
         }
-
-        // Archives end at last month; REST covers the current month to now.
-        syncLatest(ticker, timeframe);
-        log.info("{} {} backfill complete: {} bars in table",
-                ticker, timeframe, writer.count(symbol.getId(), timeframe));
     }
 
     /**
@@ -90,18 +119,71 @@ public class IngestionService {
     public int syncLatest(String ticker, String timeframe) {
         Symbol symbol = requireSymbol(ticker);
         Duration barLength = Timeframes.durationOf(timeframe);
-        writer.ensurePartition(symbol.getId());
+        ReentrantLock lock = lockFor(ticker, timeframe);
+        lock.lock();
+        try {
+            writer.ensurePartition(symbol.getId());
+            Instant from = writer.latestOpenTime(symbol.getId(), timeframe)
+                    .map(latest -> latest.plus(barLength))
+                    .orElse(Instant.now().minus(Duration.ofDays(7))); // cold start
+            return fetchAndStore(symbol, timeframe, from);
+        } finally {
+            lock.unlock();
+        }
+    }
 
-        Instant from = writer.latestOpenTime(symbol.getId(), timeframe)
-                .map(latest -> latest.plus(barLength))
-                .orElse(Instant.now().minus(Duration.ofDays(7))); // cold start
+    /**
+     * Finds holes in what we hold — missing candles between two stored ones
+     * — and fetches them again. A hole the exchange itself has (maintenance)
+     * comes back empty and is left alone. Returns the number of bars added.
+     */
+    public int repairGaps(String ticker, String timeframe) {
+        Symbol symbol = requireSymbol(ticker);
+        Duration barLength = Timeframes.durationOf(timeframe);
+        ReentrantLock lock = lockFor(ticker, timeframe);
+        lock.lock();
+        try {
+            List<Instant[]> gaps = new ArrayList<>();
+            jdbc.query("SELECT open_time, next_time FROM ("
+                            + "SELECT open_time, LEAD(open_time) OVER (ORDER BY open_time) AS next_time "
+                            + "FROM candles WHERE symbol_id = ? AND timeframe = ?) t "
+                            + "WHERE EXTRACT(EPOCH FROM (next_time - open_time)) > ? "
+                            + "ORDER BY open_time LIMIT 50",
+                    rs -> {
+                        gaps.add(new Instant[]{
+                                rs.getTimestamp("open_time").toInstant(),
+                                rs.getTimestamp("next_time").toInstant()});
+                    },
+                    symbol.getId(), timeframe, barLength.toSeconds());
+            int added = 0;
+            for (Instant[] g : gaps) {
+                Instant from = g[0].plus(barLength);
+                List<CandleBar> bars = binance.fetchKlines(ticker, timeframe, from, g[1]).stream()
+                        .filter(b -> !b.openTime().isBefore(from) && b.openTime().isBefore(g[1]))
+                        .toList();
+                if (!bars.isEmpty()) {
+                    checkOrdering(bars, ticker + " " + timeframe + " gap repair");
+                    added += writer.upsertBatch(symbol.getId(), timeframe, bars);
+                }
+            }
+            if (added > 0) {
+                log.info("{} {}: repaired {} missing bars in {} gaps", ticker, timeframe,
+                        added, gaps.size());
+            }
+            return added;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Fetches from {@code from} to the closed-bar cutoff and stores what is closed. */
+    private int fetchAndStore(Symbol symbol, String timeframe, Instant from) {
+        Duration barLength = Timeframes.durationOf(timeframe);
         Instant cutoff = lastClosedOpenTime(barLength);
-
         if (!from.isBefore(cutoff.plus(barLength))) {
             return 0; // already current
         }
-
-        List<CandleBar> fetched = binance.fetchKlines(ticker, timeframe, from,
+        List<CandleBar> fetched = binance.fetchKlines(symbol.getTicker(), timeframe, from,
                 cutoff.plus(barLength));
         // THE closed-bar filter: keep only bars whose full duration has
         // elapsed. The forming bar never enters the table.
@@ -111,19 +193,25 @@ public class IngestionService {
         if (closed.isEmpty()) {
             return 0;
         }
-        checkOrdering(closed, ticker + " " + timeframe + " sync");
+        checkOrdering(closed, symbol.getTicker() + " " + timeframe + " sync");
         int inserted = writer.upsertBatch(symbol.getId(), timeframe, closed);
         if (inserted > 0) {
-            log.info("{} {}: +{} bars (through {})", ticker, timeframe,
+            log.info("{} {}: +{} bars (through {})", symbol.getTicker(), timeframe,
                     inserted, closed.get(closed.size() - 1).openTime());
         }
         return inserted;
     }
 
+    /** How long after a bar's official close we wait before trusting it as
+     *  closed: covers a host clock running a little fast, and Binance's REST
+     *  data lagging at the boundary. A bar stored early would be a partial
+     *  bar forever (writes never overwrite). */
+    static final Duration CLOSE_MARGIN = Duration.ofSeconds(30);
+
     /** Open time of the most recent FULLY CLOSED bar for this timeframe. */
     static Instant lastClosedOpenTime(Duration barLength) {
         long barMillis = barLength.toMillis();
-        long now = Instant.now().toEpochMilli();
+        long now = Instant.now().minus(CLOSE_MARGIN).toEpochMilli();
         long currentBarOpen = (now / barMillis) * barMillis; // forming bar
         return Instant.ofEpochMilli(currentBarOpen - barMillis);
     }

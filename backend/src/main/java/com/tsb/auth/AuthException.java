@@ -74,8 +74,17 @@ public class AuthException extends RuntimeException {
      */
     public static AuthException accountHasPassword() {
         return new AuthException("ACCOUNT_HAS_PASSWORD",
-                "That email already signs in with a password. "
-                        + "Sign in with your password once to link Google.",
+                "That email already has an account that signs in with a password. "
+                        + "Sign in with your email and password instead.",
+                HttpStatus.CONFLICT, null);
+    }
+
+    /** The email is already linked to a DIFFERENT Google account. Taking the
+     *  account over by matching email would hand it to whoever controls the
+     *  address now (a lapsed domain, a recycled work mailbox). */
+    public static AuthException googleAccountMismatch() {
+        return new AuthException("EMAIL_TAKEN",
+                "That email is already linked to a different Google account.",
                 HttpStatus.CONFLICT, null);
     }
 

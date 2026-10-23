@@ -13,7 +13,7 @@ import java.util.stream.Collectors;
  * right for tests (the tree's shape is unmistakable) and hard to read in a
  * debugger ({@code ((rsi < 30) AND (CLOSE > SMA(CLOSE, 200)))}). This
  * printer mirrors the parser's binding powers — OR 1, AND 3, NOT's operand
- * 5, comparisons 5, + and - 7, * and / 9, unary minus 11, lookback 13 — so
+ * 5, comparisons 5, + and - 7, * and / 9, unary minus 11, ON 12, lookback 13 — so
  * parsing its output gives back the same tree. The tests check exactly that.
  */
 final class ConditionText {
@@ -39,6 +39,7 @@ final class ConditionText {
             case Expr.Call c -> c.name() + "(" + c.args().stream()
                     .map(ConditionText::print).collect(Collectors.joining(", ")) + ")";
             case Expr.Lookback l -> wrap(l.target(), 13) + "[" + l.offset() + "]";
+            case Expr.On o -> wrap(o.target(), 12) + " ON " + o.timeframe();
             default -> AstPrinter.print(e);
         };
     }
@@ -57,6 +58,7 @@ final class ConditionText {
                 case MUL, DIV -> 9;
             };
             case Expr.Unary u -> u.op() == Expr.UnaryOp.NOT ? 4 : 11;
+            case Expr.On ignored -> 12;
             default -> ATOM;
         };
     }

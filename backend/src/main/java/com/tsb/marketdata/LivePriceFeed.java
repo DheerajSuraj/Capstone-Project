@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -76,14 +77,29 @@ public class LivePriceFeed {
         return out;
     }
 
+    /**
+     * The last quote ever seen, however old — for VALUING positions (a stale
+     * price is far closer to the truth than the entry price), never for
+     * filling an order.
+     */
+    public Optional<Quote> last(String ticker) {
+        return Optional.ofNullable(quotes.get(ticker));
+    }
+
     /** Visible for tests and for the matcher's unit tests. */
     public void put(String ticker, double price, Instant at) {
         quotes.put(ticker, new Quote(price, at));
     }
 
+    /** No polling before this moment: Binance asked us to slow down. */
+    private volatile Instant pausedUntil = Instant.EPOCH;
+    /** When each ticker's failure was last logged, so a long outage logs
+     *  once a minute instead of every 2 seconds. */
+    private final Map<String, Instant> lastWarned = new ConcurrentHashMap<>();
+
     @Scheduled(initialDelayString = "PT3S", fixedDelayString = "PT2S")
     public void poll() {
-        if (!enabled) {
+        if (!enabled || Instant.now().isBefore(pausedUntil)) {
             return;
         }
         for (String ticker : TICKERS) {
@@ -92,12 +108,49 @@ public class LivePriceFeed {
                 if (Double.isFinite(price) && price > 0) {
                     put(ticker, price, Instant.now());
                 }
+            } catch (HttpStatusCodeException e) {
+                int code = e.getStatusCode().value();
+                if (code == 429 || code == 418) {
+                    // Too many requests (418 = IP banned for ignoring 429s).
+                    // Keep calling and the ban grows; back off as told.
+                    long wait = retryAfterSeconds(e);
+                    pausedUntil = Instant.now().plusSeconds(wait);
+                    log.warn("Binance asked us to slow down (HTTP {}): pausing live prices "
+                            + "for {} s. Paper orders need a fresh price and will be refused "
+                            + "until then.", code, wait);
+                    return;
+                }
+                warn(ticker, e);
             } catch (Exception e) {
                 // A blip leaves the old quote in place until it goes stale;
                 // after MAX_AGE, market orders are refused rather than filled
                 // at an old price.
-                log.debug("price poll {} failed: {}", ticker, e.getMessage());
+                warn(ticker, e);
             }
         }
+    }
+
+    private void warn(String ticker, Exception e) {
+        Instant now = Instant.now();
+        Instant before = lastWarned.get(ticker);
+        if (before == null || Duration.between(before, now).toSeconds() >= 60) {
+            lastWarned.put(ticker, now);
+            log.warn("live price for {} unavailable: {} (paper orders on {} are refused "
+                    + "once the last price is {} s old)", ticker, e.toString(), ticker,
+                    MAX_AGE.toSeconds());
+        }
+    }
+
+    private static long retryAfterSeconds(HttpStatusCodeException e) {
+        try {
+            String h = e.getResponseHeaders() == null ? null
+                    : e.getResponseHeaders().getFirst("Retry-After");
+            if (h != null) {
+                return Math.max(5, Math.min(3600, Long.parseLong(h.trim())));
+            }
+        } catch (NumberFormatException ignored) {
+            // fall through to the default
+        }
+        return 60;
     }
 }

@@ -496,6 +496,7 @@
   color: var(--accent);
 }
 .tsb-leaf__code { display: block; margin: 3px 0 0 28px; font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.tsb-leaf__tf { margin: 4px 0 0 28px; font-size: 12px; color: var(--muted); }
 .tsb-leaf__wait, .tsb-leaf__note { margin: 6px 0 0 28px; color: var(--muted); font-size: 12px; }
 
 /* ── gauge: where it had to be vs where it was ───────────────── */
@@ -598,5 +599,160 @@
   .tsb-win__num { grid-column: 1 / -1; }
   .tsb-part { grid-template-columns: minmax(0, 1fr) 44px; }
   .tsb-part__bar { grid-column: 1 / -1; grid-row: 2; }
-  .tsb-g, .tsb-x, .tsb-leaf__code, .tsb-leaf__wait, .tsb-leaf__note { margin-left: 0; }
+  .tsb-g, .tsb-x, .tsb-leaf__code, .tsb-leaf__wait, .tsb-leaf__note, .tsb-leaf__tf { margin-left: 0; }
+}
+
+/* ── The candle panel, after TradAO: account, orders, market ─────────── */
+.tsb-sec {
+  margin: 16px 0 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tsb-book {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.tsb-book__tile {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.tsb-book__k {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.tsb-book__v {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.tsb-book__v small {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.tsb-book__v--quiet {
+  font-family: inherit;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.tsb-book__s {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.tsb-book__s.up { color: #4cc38a; }
+.tsb-book__s.down { color: #e5544b; }
+
+.tsb-usage {
+  position: relative;
+  height: 8px;
+  margin: 8px 0 2px;
+  border-radius: 4px;
+  background: #3fb6a833;
+  overflow: visible;
+}
+
+.tsb-usage__fill {
+  height: 100%;
+  border-radius: 4px;
+  background: #5b9cf6;
+}
+
+.tsb-usage__mark {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 0;
+  border-left: 2px dotted;
+}
+
+.tsb-fills {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.tsb-fill {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.tsb-fill__glyph {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--accent);
+}
+
+.tsb-fill.is-sell .tsb-fill__glyph {
+  color: var(--text);
+}
+
+.tsb-fill__main {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.tsb-fill__pnl {
+  font-family: var(--mono);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tsb-levels {
+  margin: 8px 0 0;
+}
+
+.tsb-vs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.tsb-vs > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.tsb-vs b {
+  font-family: var(--mono);
 }

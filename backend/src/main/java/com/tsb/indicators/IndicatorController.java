@@ -1,8 +1,11 @@
 package com.tsb.indicators;
 
+import com.tsb.auth.CurrentUser;
+import com.tsb.compiler.Analyzer;
 import com.tsb.compiler.CompiledStrategy;
 import com.tsb.compiler.Expr;
 import com.tsb.compiler.Registry;
+import com.tsb.compiler.Timeframe;
 import com.tsb.execution.IndicatorBank;
 import com.tsb.indicators.IndicatorDtos.ComputeRequest;
 import com.tsb.indicators.IndicatorDtos.ComputeResponse;
@@ -53,10 +56,17 @@ public class IndicatorController {
      *  the visible window starts. */
     private static final int DEFAULT_BARS = 1500;
 
-    private final CandleSeriesProvider candles;
+    /** Newest candles computed for an anonymous chart. Enough for the
+     *  landing chart (the candle endpoint sends at most 20,000), far below
+     *  the 200,000 five-minute candles of the whole history. */
+    static final int ANONYMOUS_BARS = 20_000;
 
-    public IndicatorController(CandleSeriesProvider candles) {
+    private final CandleSeriesProvider candles;
+    private final CurrentUser currentUser;
+
+    public IndicatorController(CandleSeriesProvider candles, CurrentUser currentUser) {
         this.candles = candles;
+        this.currentUser = currentUser;
     }
 
     /* ---------------------------------------------------------- catalog */
@@ -143,22 +153,25 @@ public class IndicatorController {
         List<String[]> requested = new ArrayList<>();
 
         for (SpecRequest spec : req.specs()) {
-            CompiledStrategy.IndicatorInstance instance = toInstance(spec);
+            CompiledStrategy.IndicatorInstance instance = onTimeframe(toInstance(spec),
+                    spec, req.timeframe());
             manifest.add(instance);
             requested.add(new String[] { spec.id(), instance.key() });
         }
 
-        CandleSeries series = candles.load(
-                req.symbol(),
-                req.timeframe(),
-                parse(req.from()),
-                parse(req.to()));
+        // Signed in: the whole range asked for, so the backtest chart shows
+        // exactly the values the run used. Anonymous (the landing chart):
+        // only the newest candles — this endpoint is open to anyone, and the
+        // full history for twelve slow indicators took minutes of CPU.
+        CandleSeries series = currentUser.id().isEmpty()
+                ? candles.loadLatest(req.symbol(), req.timeframe(), ANONYMOUS_BARS)
+                : candles.load(req.symbol(), req.timeframe(), parse(req.from()), parse(req.to()));
 
         if (series == null || series.isEmpty()) {
             return new ComputeResponse(List.of(), List.of());
         }
 
-        Map<String, double[]> bank = IndicatorBank.compute(manifest, series);
+        Map<String, double[]> bank = IndicatorBank.compute(manifest, series, req.timeframe());
 
         long[] openTimes = series.openTimeMillis();
         List<Long> t = new ArrayList<>(openTimes.length);
@@ -218,14 +231,24 @@ public class IndicatorController {
                         throw new IllegalArgumentException(
                                 sig.describe() + " needs a value for " + p.name() + ".");
                     }
-                    double v = given.get(argIndex++);
+                    Double boxed = given.get(argIndex++);
+                    if (boxed == null || !Double.isFinite(boxed)) {
+                        throw new IllegalArgumentException(
+                                p.name() + " must be a number.");
+                    }
+                    double v = boxed;
                     if (p.positiveInt() && (v < 1 || v != Math.floor(v))) {
                         throw new IllegalArgumentException(
                                 p.name() + " must be a whole number of 1 or more.");
                     }
-                    if (!Double.isFinite(v)) {
+                    // The language's own cap. Without it one request could ask
+                    // for a 107,000-candle CCI and keep a core busy for 30 s.
+                    if (p.positiveInt() && v > Analyzer.MAX_PERIOD) {
                         throw new IllegalArgumentException(
-                                p.name() + " must be a number.");
+                                p.name() + " can be at most " + Analyzer.MAX_PERIOD + ".");
+                    }
+                    if (Math.abs(v) > 1_000_000) {
+                        throw new IllegalArgumentException(p.name() + " is out of range.");
                     }
                     constArgs.add(v);
                 }
@@ -237,6 +260,32 @@ public class IndicatorController {
 
         return new CompiledStrategy.IndicatorInstance(
                 spec.name(), source, List.copyOf(constArgs));
+    }
+
+    /** Moves the line to bigger candles when the spec asks for it — with
+     *  the same checks the language applies to {@code ON}. */
+    private static CompiledStrategy.IndicatorInstance onTimeframe(
+            CompiledStrategy.IndicatorInstance instance, SpecRequest spec, String chartTimeframe) {
+        if (spec.timeframe() == null || spec.timeframe().isBlank()) {
+            return instance;
+        }
+        String tf = spec.timeframe().trim();
+        if (!Timeframe.ON_TIMEFRAMES.contains(tf)) {
+            throw new IllegalArgumentException("Timeframe must be one of "
+                    + String.join(", ", Timeframe.ON_TIMEFRAMES) + ".");
+        }
+        long big = Timeframe.millis(tf).orElseThrow();
+        long own = Timeframe.millis(chartTimeframe).orElseThrow(() ->
+                new IllegalArgumentException("Unknown chart timeframe " + chartTimeframe + "."));
+        if (big <= own || big % own != 0) {
+            throw new IllegalArgumentException(tf + " must be a bigger timeframe that "
+                    + chartTimeframe + " candles fit into evenly.");
+        }
+        int offset = spec.offset() == null ? 0 : spec.offset();
+        if (offset < 0 || offset > 10_000) {
+            throw new IllegalArgumentException("Offset must be between 0 and 10000.");
+        }
+        return instance.on(tf, offset);
     }
 
     private static Expr.PriceField priceField(String raw, String indicator) {

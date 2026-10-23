@@ -135,6 +135,7 @@ function RuleHealth({
   const long = s.outcomes.IGNORED_ALREADY_LONG ?? 0
   const flat = s.outcomes.IGNORED_NOTHING_TO_SELL ?? 0
   const small = s.outcomes.REJECTED_TOO_SMALL ?? 0
+  const broke = s.outcomes.REJECTED_NOT_ENOUGH_CASH ?? 0
   const oneIn = s.trueBars > 0 ? Math.round(evaluated / s.trueBars) : 0
   const blocker = s.parts.find((p) => p.text === s.bottleneck)
   const falseBars = evaluated - s.trueBars
@@ -166,7 +167,7 @@ function RuleHealth({
           { label: s.thenAction === 'BUY' ? 'Actually bought' : 'Actually sold', value: filled },
         ]}
       />
-      {(long > 0 || flat > 0 || small > 0) && (
+      {(long > 0 || flat > 0 || small > 0 || broke > 0) && (
         <div className="tsb-chips">
           {long > 0 && (
             <span className="tsb-chip" title="TSB holds one position at a time">
@@ -175,6 +176,11 @@ function RuleHealth({
           )}
           {flat > 0 && <span className="tsb-chip">💤 {n(flat)} skipped — nothing to sell</span>}
           {small > 0 && <span className="tsb-chip">🪙 {n(small)} too small for the exchange</span>}
+          {broke > 0 && (
+            <span className="tsb-chip" title="A fixed-size buy that cost more than the cash in the account">
+              💸 {n(broke)} refused — more than the cash available
+            </span>
+          )}
         </div>
       )}
 

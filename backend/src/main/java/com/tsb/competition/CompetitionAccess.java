@@ -50,6 +50,11 @@ public class CompetitionAccess {
         return username != null && admins.contains(username.toLowerCase(Locale.ROOT));
     }
 
+    /** Whether anyone can moderate the forum at all. */
+    public boolean hasModerators() {
+        return !admins.isEmpty();
+    }
+
     public boolean isAdmin(String username) {
         return admins.isEmpty()
                 || (username != null && admins.contains(username.toLowerCase(Locale.ROOT)));

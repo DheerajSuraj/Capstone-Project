@@ -25,19 +25,39 @@ export default function ForumView({
   onOpenStrategies: () => void
 }) {
   const [screen, setScreen] = useState<Screen>(snapshot ? { kind: 'compose' } : { kind: 'list' })
-  const [pending] = useState<Blob | null>(snapshot)
+  // The chart snapshot goes into ONE new post. It used to stay here and
+  // come back attached to every later "New post".
+  const [pending, setPending] = useState<Blob | null>(snapshot)
 
   useEffect(() => {
     if (snapshot) onSnapshotUsed()
   }, [snapshot, onSnapshotUsed])
 
+  // Signing out while writing a post: back to the list (there is nothing to
+  // post with). Signing in or out elsewhere reloads what is shown, so likes
+  // and "your post" buttons are the new reader's.
+  useEffect(() => {
+    if (!signedIn) setScreen((s) => (s.kind === 'compose' && !pending ? { kind: 'list' } : s))
+  }, [signedIn, pending])
+
   const compose = () => (signedIn ? setScreen({ kind: 'compose' }) : onSignIn())
+  const leaveCompose = (next: Screen) => {
+    setPending(null)
+    setScreen(next)
+  }
 
   return (
     <section className="panel">
-      {screen.kind === 'list' && <ForumList onOpen={(id) => setScreen({ kind: 'post', id })} onCompose={compose} />}
+      {screen.kind === 'list' && (
+        <ForumList
+          key={signedIn ? 'in' : 'out'}
+          onOpen={(id) => setScreen({ kind: 'post', id })}
+          onCompose={compose}
+        />
+      )}
       {screen.kind === 'post' && (
         <PostPage
+          key={`${screen.id}-${signedIn ? 'in' : 'out'}`}
           id={screen.id}
           signedIn={signedIn}
           onSignIn={onSignIn}
@@ -49,13 +69,16 @@ export default function ForumView({
         (signedIn ? (
           <Compose
             initialImage={pending}
-            onPosted={(id) => setScreen({ kind: 'post', id })}
-            onCancel={() => setScreen({ kind: 'list' })}
+            onPosted={(id) => leaveCompose({ kind: 'post', id })}
+            onCancel={() => leaveCompose({ kind: 'list' })}
           />
         ) : (
           <div className="tsb-f">
             <p>Sign in to post.</p>
-            <button type="button" onClick={onSignIn}>Sign in</button>
+            <button type="button" onClick={onSignIn}>Sign in</button>{' '}
+            <button type="button" className="ghost" onClick={() => leaveCompose({ kind: 'list' })}>
+              ← Back to the forum
+            </button>
           </div>
         ))}
     </section>

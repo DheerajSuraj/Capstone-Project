@@ -2,8 +2,10 @@ import { useState, type FormEvent } from 'react';
 import { useAuth } from './AuthContext';
 import {
   ApiError,
+  MAX_PASSWORD_BYTES,
   MIN_PASSWORD_LENGTH,
   passwordStrength,
+  passwordTooLong,
   validateUsername,
 } from './api';
 import GoogleButton from './GoogleButton';
@@ -89,6 +91,7 @@ export default function SignUp({ onGoToSignIn }: { onGoToSignIn: () => void }) {
     }
   }
 
+  const tooLong = passwordTooLong(password);
   const canSubmit =
     !busy &&
     validateUsername(username.trim()) === null &&
@@ -97,6 +100,7 @@ export default function SignUp({ onGoToSignIn }: { onGoToSignIn: () => void }) {
     email.trim().length > 3 &&
     email.includes('@') &&
     password.length >= MIN_PASSWORD_LENGTH &&
+    !tooLong &&
     confirm === password;
 
   return (
@@ -178,6 +182,12 @@ export default function SignUp({ onGoToSignIn }: { onGoToSignIn: () => void }) {
             placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
             autoComplete="new-password"
             disabled={busy}
+            invalid={tooLong}
+            error={
+              tooLong
+                ? `That's longer than ${MAX_PASSWORD_BYTES} bytes, more than passwords can use here. Try a shorter passphrase.`
+                : null
+            }
           >
             <StrengthMeter score={strength.score} label={strength.label} />
           </PasswordField>

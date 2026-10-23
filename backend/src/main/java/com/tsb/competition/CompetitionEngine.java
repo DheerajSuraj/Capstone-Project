@@ -3,10 +3,13 @@ package com.tsb.competition;
 import com.tsb.compiler.CompiledStrategy;
 import com.tsb.compiler.Expr;
 import com.tsb.compiler.StrategyAst;
+import com.tsb.execution.Backtester;
 import com.tsb.execution.ExchangeRules;
 import com.tsb.execution.IndicatorBank;
 import com.tsb.execution.Interpreter;
+import com.tsb.execution.ProtectiveExits;
 import com.tsb.execution.Sizing;
+import com.tsb.execution.Trade;
 import com.tsb.marketdata.CandleSeries;
 
 import java.util.ArrayList;
@@ -20,7 +23,8 @@ import java.util.Locale;
  * <p><b>Same fill model as the backtester, step for step.</b> A rule that
  * fires at a candle's close places an order; the order fills at the NEXT
  * candle's open. Stops and take-profits fill intrabar at their level, stop
- * first. So with every limit switched off, stepping this engine through a
+ * first — or at the open when the candle gaps past them ({@link ProtectiveExits},
+ * the same code the backtester uses). So with every limit switched off, stepping this engine through a
  * series produces exactly the trades {@code Backtester} produces — the tests
  * check that trade for trade. The competition adds only the rules on top.
  *
@@ -83,8 +87,8 @@ public final class CompetitionEngine {
         this.exchange = exchange;
         this.rules = rules;
         this.fee = rules.feeFraction();
-        this.interp = new Interpreter(this.strategy.lets(), series,
-                IndicatorBank.compute(this.strategy.indicators(), series));
+        this.interp = new Interpreter(this.strategy, series,
+                IndicatorBank.compute(this.strategy, series));
     }
 
     static CompiledStrategy withCompetitionMoney(CompiledStrategy s, RuleSet r) {
@@ -138,8 +142,9 @@ public final class CompetitionEngine {
                 StrategyAst.Sizing sizing = ((StrategyAst.Action.Buy) action).sizing();
                 double rounded = exchange.roundQty(
                         Sizing.desiredBuyQty(sizing, s.cash, open, fee));
-                if (rounded <= 0 || !exchange.meetsMinNotional(rounded, open)) {
-                    continue;
+                if (rounded <= 0 || !exchange.meetsMinNotional(rounded, open)
+                        || !Sizing.affordable(rounded, s.cash, open, fee)) {
+                    continue; // too small, or more than the cash: same as the backtester
                 }
                 double notional = rounded * open;
                 double feePaid = notional * fee;
@@ -148,17 +153,19 @@ public final class CompetitionEngine {
                 s.entryPrice = open;
                 s.entryTime = t;
                 s.entryFees = feePaid;
-                s.peakSinceEntry = high;
+                // Same as the backtester: the peak starts at the entry price,
+                // and this candle's high only counts after the stops.
+                s.peakSinceEntry = open;
                 countFill(s);
                 tradedThisCandle = true;
                 events.add(new Opened(t, rounded, open, feePaid));
+                checkDailyLimits(s, open);
             } else {
                 if (s.qty <= 0) {
                     continue;
                 }
                 StrategyAst.Sizing sizing = ((StrategyAst.Action.Sell) action).sizing();
-                double sellQty = Math.min(s.qty,
-                        exchange.roundQty(Sizing.desiredSellQty(sizing, s.qty)));
+                double sellQty = Backtester.sellSize(sizing, s.qty, s.cash, open, exchange);
                 if (sellQty <= 0) {
                     continue;
                 }
@@ -174,42 +181,58 @@ public final class CompetitionEngine {
                 }
                 countFill(s);
                 tradedThisCandle = true;
+                checkDailyLimits(s, open);
             }
         }
         s.pending.clear();
 
         // ── In a trade: stop-loss / trailing / take-profit ─────────
         if (s.qty > 0) {
-            s.peakSinceEntry = Math.max(s.peakSinceEntry, high);
-            Double level = null;
-            String reason = null;
-            if (s.stopPct > 0) {
-                double l = s.entryPrice * (1 - s.stopPct / 100.0);
-                if (low <= l) {
-                    level = l;
-                    reason = "STOPLOSS";
-                }
+            // The very same rules as the backtester, from the very same code.
+            ProtectiveExits.Exit exit = ProtectiveExits.check(s.entryPrice,
+                    s.peakSinceEntry, s.stopPct, s.trailingPct, s.takeProfitPct,
+                    open, high, low);
+
+            // Max drawdown INSIDE the candle, not only at its close: a candle
+            // that dips 15% and closes 8% down must still knock out a 10%
+            // limit. Same pessimism as the stops — prices fall first — so
+            // the entry is out where equity crossed the limit (at the open
+            // when it gapped through), unless its own stop or trail sat
+            // higher and fired first. A take-profit is on the rising side,
+            // so it comes after the fall.
+            double limitEquity = s.peakEquity * (1 - rules.maxDrawdownPct() / 100.0);
+            double breach = (limitEquity - s.cash) / s.qty; // price where equity = limit
+            boolean stopFirst = exit != null
+                    && exit.reason() != Trade.ExitReason.TAKEPROFIT
+                    && exit.price() >= breach;
+            if (low < breach && !stopFirst) {
+                double price = Math.min(open, breach);
+                s.cash += Sizing.exitProceeds(s.qty, price, fee);
+                events.add(closed(s, s.qty, price, s.entryFees, t, "ELIMINATED"));
+                flatten(s);
+                s.equity = s.cash;
+                double fell = s.drawdownPct();
+                s.maxDrawdownSeen = Math.max(s.maxDrawdownSeen, fell);
+                s.status = EntryState.Status.ELIMINATED;
+                s.statusReason = String.format(Locale.ROOT,
+                        "Max drawdown breached during the candle: equity fell %.2f%% "
+                                + "from its best (limit %.2f%%).",
+                        fell, rules.maxDrawdownPct());
+                s.statusCandle = t;
+                s.lastCandle = t;
+                s.pending.clear();
+                return events; // stop: this entry is finished
             }
-            if (level == null && s.trailingPct > 0) {
-                double l = s.peakSinceEntry * (1 - s.trailingPct / 100.0);
-                if (low <= l) {
-                    level = l;
-                    reason = "TRAILING";
-                }
-            }
-            if (level == null && s.takeProfitPct > 0) {
-                double l = s.entryPrice * (1 + s.takeProfitPct / 100.0);
-                if (high >= l) {
-                    level = l;
-                    reason = "TAKEPROFIT";
-                }
-            }
-            if (level != null) {
-                s.cash += Sizing.exitProceeds(s.qty, level, fee);
-                events.add(closed(s, s.qty, level, s.entryFees, t, reason));
+
+            if (exit != null) {
+                s.cash += Sizing.exitProceeds(s.qty, exit.price(), fee);
+                events.add(closed(s, s.qty, exit.price(), s.entryFees, t,
+                        exit.reason().name()));
                 flatten(s);
                 countFill(s);
                 tradedThisCandle = true;
+            } else {
+                s.peakSinceEntry = Math.max(s.peakSinceEntry, high);
             }
         }
 
@@ -241,10 +264,15 @@ public final class CompetitionEngine {
                 List<StrategyAst.IfStmt> body = ruleList.get(r).body();
                 for (int k = 0; k < body.size(); k++) {
                     StrategyAst.IfStmt stmt = body.get(k);
-                    boolean then = interp.bool(stmt.condition(), i);
+                    // Same rule as the backtest: ELSE needs a definite
+                    // false; no answer (missing data) runs neither branch.
+                    byte answer = interp.tri(stmt.condition(), i);
+                    boolean then = answer == Interpreter.TRUE;
                     StrategyAst.Action action = then
                             ? stmt.thenAction()
-                            : stmt.elseAction().orElse(null);
+                            : answer == Interpreter.FALSE
+                                    ? stmt.elseAction().orElse(null)
+                                    : null;
                     if (action == null) {
                         continue;
                     }
@@ -270,16 +298,8 @@ public final class CompetitionEngine {
         }
 
         // ── A trade happened: daily loss and trade count ───────────
-        if (tradedThisCandle && !s.haltedToday) {
-            if (rules.dailyLossLimitPct() > 0
-                    && s.dailyLossPct() >= rules.dailyLossLimitPct()) {
-                halt(s, String.format(Locale.ROOT,
-                        "Daily loss limit hit: down %.2f%% today (limit %.2f%%).",
-                        s.dailyLossPct(), rules.dailyLossLimitPct()));
-            } else if (rules.maxTradesPerDay() > 0
-                    && s.tradesToday >= rules.maxTradesPerDay()) {
-                halt(s, "Max trades per day reached (" + rules.maxTradesPerDay() + ").");
-            }
+        if (tradedThisCandle) {
+            checkDailyLimits(s, close);
         }
 
         s.lastCandle = t;
@@ -354,6 +374,29 @@ public final class CompetitionEngine {
         s.stopPct = 0;
         s.takeProfitPct = 0;
         s.trailingPct = 0;
+    }
+
+    /**
+     * The daily rules — loss limit and trade count — valued at {@code mark}.
+     * Checked after every fill as well as at the close, so a second order
+     * filling at the same open cannot slip past a limit the first one just
+     * reached. A halt only stops new entries; exits are always allowed.
+     */
+    private void checkDailyLimits(EntryState s, double mark) {
+        if (s.haltedToday) {
+            return;
+        }
+        double equityNow = s.cash + s.qty * mark;
+        double lossPct = s.dayStartEquity > 0
+                ? Math.max(0, (s.dayStartEquity - equityNow) / s.dayStartEquity * 100) : 0;
+        if (rules.dailyLossLimitPct() > 0 && lossPct >= rules.dailyLossLimitPct()) {
+            halt(s, String.format(Locale.ROOT,
+                    "Daily loss limit hit: down %.2f%% today (limit %.2f%%).",
+                    lossPct, rules.dailyLossLimitPct()));
+        } else if (rules.maxTradesPerDay() > 0
+                && s.tradesToday >= rules.maxTradesPerDay()) {
+            halt(s, "Max trades per day reached (" + rules.maxTradesPerDay() + ").");
+        }
     }
 
     private static void countFill(EntryState s) {
