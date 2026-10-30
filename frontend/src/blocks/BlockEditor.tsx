@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Blockly from 'blockly'
 import './defs' // registers block definitions on import
-import { toolbox, tslTheme } from './defs'
-import { generateTslChecked, MISSING, STARTER_STATE } from './generator'
+import { NAMED_VALUES, namedValuesFlyout, toolbox, tslTheme } from './defs'
+import { generateTslChecked, MISSING } from './generator'
 import { api, type DiagnosticDto } from '../api'
 
 /**
@@ -10,22 +10,36 @@ import { api, type DiagnosticDto } from '../api'
  * (live, debounced /api/compile) -> diagnostics under the canvas. Blockly
  * is a view; the compiler stays the single brain — the blocks never
  * re-implement a language rule.
+ *
+ * Opening the editor changes nothing: the blocks were built from the code
+ * (codeToBlocks), so the code stays exactly as the user wrote it, comments
+ * and layout included, until a block is actually changed. Only then is it
+ * rewritten from the blocks. Moving blocks around is not a change.
  */
 export default function BlockEditor({
-  onSource,
   initialState,
+  source,
+  onSource,
   onState,
+  syncOnLoad,
 }: {
+  /** The blocks to show. Read once, when the editor opens. */
+  initialState: object
+  /** The strategy's code as it stands (shown under "Show code"). */
+  source: string
+  /** The blocks' code, after an edit that changed it. */
   onSource: (source: string) => void
-  /** The blocks as the user left them last time (null = the starter). */
-  initialState?: object | null
-  /** Called with the blocks after every change, so leaving the Builder
-   *  and coming back does not lose them. */
+  /** Called with the blocks after every change (moves too), so leaving the
+   *  Builder and coming back does not lose them or their layout. */
   onState?: (state: object) => void
+  /** Rewrite the code from the blocks as soon as they open (the user chose
+   *  to keep the blocks' version over code they can't fully show). */
+  syncOnLoad?: boolean
 }) {
   const host = useRef<HTMLDivElement>(null)
   const workspaceRef = useRef<Blockly.WorkspaceSvg | null>(null)
   const debounce = useRef<number>(0)
+  // The code the blocks write (equal in meaning to `source`, not in text).
   const [tsl, setTsl] = useState('')
   const [diagnostics, setDiagnostics] = useState<DiagnosticDto[]>([])
   // False until the compiler has answered for the current blocks (or when
@@ -51,7 +65,8 @@ export default function BlockEditor({
       trashcan: true,
     })
     workspaceRef.current = ws
-    Blockly.serialization.workspaces.load(initialState ?? STARTER_STATE, ws)
+    ws.registerToolboxCategoryCallback(NAMED_VALUES, namedValuesFlyout)
+    Blockly.serialization.workspaces.load(initialState, ws)
     // Frame all top blocks (both entry and exit rules) on first load.
     setTimeout(() => {
       ws.scrollCenter()
@@ -59,17 +74,12 @@ export default function BlockEditor({
       ws.zoomCenter(-1) // ease off max zoom so blocks aren't edge-to-edge
     }, 50)
 
-    const regenerate = () => {
-      const { source, missing: holes } = generateTslChecked(ws)
-      setTsl(source)
-      setMissing(holes)
-      onSource(source)
-      onState?.(Blockly.serialization.workspaces.save(ws))
+    const check = (code: string) => {
       window.clearTimeout(debounce.current)
       setChecked(false)
       setCheckError(null)
       const mine = ++checkSeq.current
-      if (!source) {
+      if (!code) {
         setDiagnostics([])
         return
       }
@@ -78,7 +88,7 @@ export default function BlockEditor({
           // Through the api helper, which sends the sign-in token: the
           // compile endpoint needs it, and a refused request must not read
           // as "no errors".
-          const res = await api.compile(source)
+          const res = await api.compile(code)
           if (mine !== checkSeq.current) return
           setDiagnostics(res.diagnostics ?? [])
           setChecked(true)
@@ -91,11 +101,26 @@ export default function BlockEditor({
       }, 400)
     }
 
+    // What the blocks said when they opened: the code only changes when
+    // they say something else.
+    const opened = generateTslChecked(ws)
+    let last = opened.source
+    setTsl(opened.source)
+    setMissing(opened.missing)
+    if (syncOnLoad) onSource(opened.source)
+    check(opened.source)
+
     ws.addChangeListener((e: Blockly.Events.Abstract) => {
       if (e.isUiEvent) return
-      regenerate()
+      const { source: now, missing: holes } = generateTslChecked(ws)
+      onState?.(Blockly.serialization.workspaces.save(ws))
+      if (now === last) return // moved, or loading: the strategy is the same
+      last = now
+      setTsl(now)
+      setMissing(holes)
+      onSource(now)
+      check(now)
     })
-    regenerate()
 
     return () => {
       window.clearTimeout(debounce.current)
@@ -157,20 +182,27 @@ export default function BlockEditor({
         {showCode ? 'Hide code' : 'Show code'}
       </button>
       {showCode && (
-        <pre
-          style={{
-            fontFamily: 'var(--mono)',
-            fontSize: 12.5,
-            background: 'var(--bg)',
-            border: '1px solid var(--line)',
-            borderRadius: 4,
-            padding: '10px 12px',
-            whiteSpace: 'pre-wrap',
-            marginTop: 8,
-          }}
-        >
-          {tsl || '// blocks will appear here as TSL code'}
-        </pre>
+        <>
+          {source && source !== tsl && (
+            <p className="note" style={{ margin: '8px 0 0' }}>
+              Your code as written. Changing a block rewrites it from the blocks.
+            </p>
+          )}
+          <pre
+            style={{
+              fontFamily: 'var(--mono)',
+              fontSize: 12.5,
+              background: 'var(--bg)',
+              border: '1px solid var(--line)',
+              borderRadius: 4,
+              padding: '10px 12px',
+              whiteSpace: 'pre-wrap',
+              marginTop: 8,
+            }}
+          >
+            {source || tsl || '// blocks will appear here as TSL code'}
+          </pre>
+        </>
       )}
     </div>
   )

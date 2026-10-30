@@ -8,6 +8,8 @@ import {
 } from '../api'
 import EntryDashboard from './EntryDashboard'
 import {
+  dayStartsHere,
+  ENTRY_HELP,
   ENTRY_LABEL,
   money,
   pnlClass,
@@ -109,24 +111,61 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
       <section className="tsb-cmp__rules">
         <h3>The rules</h3>
         <div className="tsb-cmp__rule-grid">
-          <Rule icon="💰" title={`${money(r.startingCapital, 0)} USDT`} text="Every entry starts with exactly this." />
-          <Rule icon="🎯" title={`+${r.profitTargetPct}% to pass`} text="Needed by the end, after fees." />
-          <Rule icon="📉" title={`${r.maxDrawdownPct}% max drawdown`} text="Fall this far from your best equity and you are out." />
-          {r.dailyLossLimitPct > 0 && (
-            <Rule icon="⏸" title={`${r.dailyLossLimitPct}% daily loss`} text="Hit it and no new trades until the next UTC day." />
+          <Rule icon="💰" title={`${money(r.startingCapital, 0)} virtual USDT`} text="Every entry starts with exactly this. Paper money: nothing real is traded." />
+          <Rule
+            icon="🎯"
+            title={`+${r.profitTargetPct}% to pass`}
+            text={
+              r.passOnTarget
+                ? 'Reach it after fees, with enough trading days, and you pass right then. The entry stops trading.'
+                : 'Judged at the end, after fees: where you finish is what counts.'
+            }
+          />
+          {r.drawdownMode === 'STATIC' ? (
+            <Rule
+              icon="📉"
+              title={`${r.maxDrawdownPct}% max loss`}
+              text={`Equity below ${money(r.startingCapital * (1 - r.maxDrawdownPct / 100), 0)} USDT and you are out. A fixed line: it never moves.`}
+            />
+          ) : (
+            <Rule
+              icon="📉"
+              title={`${r.maxDrawdownPct}% max drawdown`}
+              text="Fall this far from your best equity and you are out. The line rises with every new high."
+            />
           )}
+          {r.dailyLossLimitPct > 0 &&
+            (r.dailyLossAction === 'FAIL' ? (
+              <Rule
+                icon="⛔"
+                title={`${r.dailyLossLimitPct}% daily loss`}
+                text={`Lose this much from where the day started, open trades included, and you are out. Days start at 00:00 UTC (${dayStartsHere()} your time).`}
+              />
+            ) : (
+              <Rule
+                icon="⏸"
+                title={`${r.dailyLossLimitPct}% daily loss`}
+                text={`Lose this much from where the day started and no new trades until the next day, 00:00 UTC (${dayStartsHere()} your time). Closing is always allowed.`}
+              />
+            ))}
           {r.maxTradesPerDay > 0 && (
-            <Rule icon="🔁" title={`${r.maxTradesPerDay} trades a day`} text="Opening and closing each count once." />
+            <Rule icon="🔁" title={`${r.maxTradesPerDay} trades a day`} text="Every buy and every sell counts, so a round trip is 2. At the cap: no new trades today; closing is always allowed." />
           )}
           {r.minTradingDays > 0 && (
-            <Rule icon="📅" title={`${r.minTradingDays} trading days`} text="Days with at least one trade, needed to pass." />
+            <Rule
+              icon="📅"
+              title={`${r.minTradingDays} trading day${r.minTradingDays === 1 ? '' : 's'}`}
+              text="Days (UTC) with at least one buy or sell, needed to pass."
+            />
           )}
           <Rule icon="🧾" title={`${r.feePercent}% per fill`} text="Same fee for everyone." />
         </div>
         <p className="tsb-cmp__muted tsb-small">
           {when(c.startsAt)} → {when(c.endsAt)}. Every new {c.timeframe} candle, each entry's
           strategy is checked; an order fills at the next candle's open, the same way backtests work.
-          A stop-loss the price jumps past fills at the price it opened at, not at the stop.
+          A stop-loss the price jumps past fills at the price it opened at, not at the stop. The
+          limits are watched inside every candle with open trades counted, and an entry that
+          breaks one is closed at the limit — or where the price opened, if it gapped past.
         </p>
       </section>
 
@@ -138,7 +177,7 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
           <div className="tsb-cmp__dashes">
             {detail.myEntries.map((e) => {
               const live = board?.entries.find((x) => x.id === e.id) ?? e
-              return <EntryDashboard key={e.id} e={live} rank={ranks.get(live) ?? null} />
+              return <EntryDashboard key={e.id} e={live} rank={ranks.get(live) ?? null} rules={r} />
             })}
           </div>
         </section>
@@ -161,6 +200,12 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
             </span>
           </div>
 
+          {c.status === 'FINISHED' && board.entries.length > 0 && (
+            <p className="tsb-cmp__muted tsb-small">
+              {board.entries.filter((e) => e.status === 'PASSED').length} of {board.entries.length} passed.
+              Medals go to entries that passed.
+            </p>
+          )}
           {board.entries.length === 0 ? (
             <p className="tsb-cmp__muted">No entries yet.</p>
           ) : tab === 'entries' ? (
@@ -174,7 +219,7 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
                     <th>Status</th>
                     <th className="num">Equity</th>
                     <th className="num">Return</th>
-                    <th className="num">Worst drawdown</th>
+                    <th className="num">{r.drawdownMode === 'STATIC' ? 'Worst loss' : 'Worst drawdown'}</th>
                     <th className="num">Trades</th>
                     <th className="num">Days</th>
                   </tr>
@@ -186,12 +231,18 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
                         className={`${e.mine ? 'is-mine' : ''} is-clickable`}
                         onClick={() => setOpenEntry(openEntry === e.id ? null : e.id)}
                       >
-                        <td>{medal(ranks.get(e) ?? null)}</td>
+                        <td>{medal(ranks.get(e) ?? null, e.status === 'PASSED' || (c.status !== 'FINISHED' && e.status === 'ACTIVE' && e.returnPct > 0))}</td>
                         <td>{e.username}{e.mine && ' (you)'}</td>
                         <td>{e.strategy}</td>
                         <td>
-                          <span className={`tsb-dash__status is-${e.status.toLowerCase()}`}>{ENTRY_LABEL[e.status]}</span>
-                          {e.halted && <span className="tsb-cmp__muted"> · halted</span>}
+                          <span className={`tsb-dash__status is-${e.status.toLowerCase()}`} title={ENTRY_HELP[e.status]}>
+                            {ENTRY_LABEL[e.status]}
+                          </span>
+                          {e.halted && (
+                            <span className="tsb-cmp__muted" title={`No new trades until the next UTC day. ${e.haltReason ?? ''}`}>
+                              {' '}· paused today
+                            </span>
+                          )}
                         </td>
                         <td className="num">{money(e.equity)}</td>
                         <td className={`num ${pnlClass(e.returnPct)}`}>{signedPct(e.returnPct)}</td>
@@ -227,7 +278,7 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
                 <tbody>
                   {board.traders.map((t) => (
                     <tr key={t.username} className={t.mine ? 'is-mine' : undefined}>
-                      <td>{board.lastCandle != null && c.status !== 'CANCELLED' ? medal(t.rank) : '—'}</td>
+                      <td>{board.lastCandle != null && c.status !== 'CANCELLED' ? medal(t.rank, t.cumulativePnl > 0) : '—'}</td>
                       <td>{t.username}{t.mine && ' (you)'}</td>
                       <td className="num">{t.entries}</td>
                       <td className="num">{t.passed}</td>
@@ -247,8 +298,12 @@ export default function CompetitionDetail({ id, onBack }: { id: number; onBack: 
   )
 }
 
-function medal(rank: number | null) {
+/** A medal for the top three — only where it means something: for entries
+ *  that passed, or are in the running and in profit (never next to Failed
+ *  or Eliminated), and for traders in profit. */
+function medal(rank: number | null, earned = true) {
   if (rank == null) return '—'
+  if (!earned) return rank
   return rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank
 }
 
@@ -319,7 +374,12 @@ function Join({ detail, onJoined }: { detail: CompetitionDetailDto; onJoined: ()
             <span>
               <b>{s.name}</b> v{s.latestVersion}
               <span className="tsb-cmp__muted"> · {s.symbol} {s.timeframe}</span>
-              {!fits(s) && <span className="tsb-cmp__muted"> — wrong market or timeframe</span>}
+              {!fits(s) && (
+                <span className="tsb-cmp__muted">
+                  {' '}
+                  — needs {c.symbol} {c.timeframe}
+                </span>
+              )}
             </span>
           </label>
         ))}

@@ -36,17 +36,21 @@ import java.util.Locale;
  *   <li>orders from the last close fill at this open — "enter a trade" /
  *       "exit the trade, sell signal fired" (a halted entry cannot enter);</li>
  *   <li>in a trade: stop-loss / take-profit / trailing stop — "check exit
- *       rules";</li>
+ *       rules" — and, inside the candle, the max drawdown (and a daily loss
+ *       that fails the entry) on equity with the open position in it;</li>
  *   <li>value at this candle's close, then "check max drawdown" → eliminated
  *       (any open position is closed at this close);</li>
+ *   <li>"check daily loss and trade count" at the close → halted for the
+ *       rest of today, or out when the rules say a daily loss fails;</li>
+ *   <li>rules that pass on the target: target (after the exit fee) and
+ *       trading days met → passed at this close;</li>
  *   <li>strategy rules at the close — "check exit / entry rules", which
- *       place orders for the next open (a halted, flat entry cannot enter);</li>
- *   <li>a trade opened or closed this candle → "check daily loss and trade
- *       count" → halted for the rest of today.</li>
+ *       place orders for the next open (a halted, flat entry cannot enter).</li>
  * </ol>
  *
  * <p>Fills count toward the daily trade limit one each: opening a trade is
  * one, closing it another, as in the diagram ("trade count plus one" on both).
+ * The daily limits are also checked right after each fill.
  */
 public final class CompetitionEngine {
 
@@ -60,8 +64,8 @@ public final class CompetitionEngine {
     }
 
     /**
-     * @param reason SIGNAL, STOPLOSS, TAKEPROFIT, TRAILING, ELIMINATED or
-     *               END_OF_COMPETITION
+     * @param reason SIGNAL, STOPLOSS, TAKEPROFIT, TRAILING, ELIMINATED,
+     *               TARGET_REACHED or END_OF_COMPETITION
      */
     public record Closed(long entryTime, long exitTime, double qty, double entryPrice,
                          double exitPrice, double fees, double pnl, String reason)
@@ -128,8 +132,6 @@ public final class CompetitionEngine {
             s.dayStartEquity = s.equity;
         }
 
-        boolean tradedThisCandle = false;
-
         // ── Orders from the last close fill at this open ───────────
         for (EntryState.Pending order : s.pending) {
             StrategyAst.IfStmt stmt = statement(order);
@@ -157,9 +159,10 @@ public final class CompetitionEngine {
                 // and this candle's high only counts after the stops.
                 s.peakSinceEntry = open;
                 countFill(s);
-                tradedThisCandle = true;
                 events.add(new Opened(t, rounded, open, feePaid));
-                checkDailyLimits(s, open);
+                if (checkDailyLimits(s, open, t, events)) {
+                    return events; // the daily loss ended the entry
+                }
             } else {
                 if (s.qty <= 0) {
                     continue;
@@ -180,8 +183,9 @@ public final class CompetitionEngine {
                     s.qty -= sellQty;
                 }
                 countFill(s);
-                tradedThisCandle = true;
-                checkDailyLimits(s, open);
+                if (checkDailyLimits(s, open, t, events)) {
+                    return events; // the daily loss ended the entry
+                }
             }
         }
         s.pending.clear();
@@ -200,27 +204,42 @@ public final class CompetitionEngine {
             // when it gapped through), unless its own stop or trail sat
             // higher and fired first. A take-profit is on the rising side,
             // so it comes after the fall.
-            double limitEquity = s.peakEquity * (1 - rules.maxDrawdownPct() / 100.0);
+            double limitEquity = rules.drawdownBase(s.peakEquity)
+                    * (1 - rules.maxDrawdownPct() / 100.0);
             double breach = (limitEquity - s.cash) / s.qty; // price where equity = limit
+            // A daily loss that ends the entry is checked the same way, on
+            // equity with the open position in it (a prop firm counts
+            // floating losses). On the way down, the higher price is met first.
+            double dayBreach = failsOnDailyLoss()
+                    ? (s.dayStartEquity * (1 - rules.dailyLossLimitPct() / 100.0) - s.cash) / s.qty
+                    : Double.NEGATIVE_INFINITY;
+            boolean daily = dayBreach > breach;
+            double first = Math.max(breach, dayBreach);
             boolean stopFirst = exit != null
                     && exit.reason() != Trade.ExitReason.TAKEPROFIT
-                    && exit.price() >= breach;
-            if (low < breach && !stopFirst) {
-                double price = Math.min(open, breach);
-                s.cash += Sizing.exitProceeds(s.qty, price, fee);
-                events.add(closed(s, s.qty, price, s.entryFees, t, "ELIMINATED"));
-                flatten(s);
-                s.equity = s.cash;
-                double fell = s.drawdownPct();
-                s.maxDrawdownSeen = Math.max(s.maxDrawdownSeen, fell);
-                s.status = EntryState.Status.ELIMINATED;
-                s.statusReason = String.format(Locale.ROOT,
-                        "Max drawdown breached during the candle: equity fell %.2f%% "
-                                + "from its best (limit %.2f%%).",
-                        fell, rules.maxDrawdownPct());
-                s.statusCandle = t;
-                s.lastCandle = t;
-                s.pending.clear();
+                    && exit.price() >= first;
+            if (low < first && !stopFirst) {
+                double price = Math.min(open, first);
+                closeOut(s, events, price, t);
+                String why;
+                if (daily) {
+                    why = String.format(Locale.ROOT,
+                            "Daily loss limit breached during the candle: down %.2f%% today "
+                                    + "(limit %.2f%%).", dailyLossPct(s, s.equity),
+                            rules.dailyLossLimitPct());
+                } else {
+                    double fell = s.drawdownPct(rules);
+                    why = rules.drawdown() == RuleSet.Drawdown.STATIC
+                            ? String.format(Locale.ROOT,
+                                    "Max loss breached during the candle: equity fell %.2f%% "
+                                            + "below the starting capital (limit %.2f%%).",
+                                    fell, rules.maxDrawdownPct())
+                            : String.format(Locale.ROOT,
+                                    "Max drawdown breached during the candle: equity fell %.2f%% "
+                                            + "from its best (limit %.2f%%).",
+                                    fell, rules.maxDrawdownPct());
+                }
+                out(s, why, t);
                 return events; // stop: this entry is finished
             }
 
@@ -230,7 +249,6 @@ public final class CompetitionEngine {
                         exit.reason().name()));
                 flatten(s);
                 countFill(s);
-                tradedThisCandle = true;
             } else {
                 s.peakSinceEntry = Math.max(s.peakSinceEntry, high);
             }
@@ -239,22 +257,52 @@ public final class CompetitionEngine {
         // ── Value at this close, then the max drawdown rule ────────
         s.equity = s.cash + s.qty * close;
         s.peakEquity = Math.max(s.peakEquity, s.equity);
-        double dd = s.drawdownPct();
+        double dd = s.drawdownPct(rules);
         s.maxDrawdownSeen = Math.max(s.maxDrawdownSeen, dd);
         if (dd > rules.maxDrawdownPct()) {
-            if (s.qty > 0) {
-                s.cash += Sizing.exitProceeds(s.qty, close, fee);
-                events.add(closed(s, s.qty, close, s.entryFees, t, "ELIMINATED"));
-                flatten(s);
-                s.equity = s.cash;
-            }
-            s.status = EntryState.Status.ELIMINATED;
-            s.statusReason = String.format(Locale.ROOT,
-                    "Max drawdown breached: equity fell %.2f%% from its best (limit %.2f%%).",
-                    dd, rules.maxDrawdownPct());
-            s.statusCandle = t;
-            s.lastCandle = t;
+            closeOut(s, events, close, t);
+            out(s, rules.drawdown() == RuleSet.Drawdown.STATIC
+                    ? String.format(Locale.ROOT,
+                            "Max loss breached: equity fell %.2f%% below the starting capital "
+                                    + "(limit %.2f%%).", dd, rules.maxDrawdownPct())
+                    : String.format(Locale.ROOT,
+                            "Max drawdown breached: equity fell %.2f%% from its best (limit %.2f%%).",
+                            dd, rules.maxDrawdownPct()), t);
             return events; // stop: this entry is finished
+        }
+
+        // ── The daily rules at this close ──────────────────────────
+        // At every close, not only after a fill: holding a position that is
+        // down past the limit is a day's loss too, and the dashboard showing
+        // "6% of 5%" must come with the halt (or the end) it promises.
+        if (checkDailyLimits(s, close, t, events)) {
+            return events; // the daily loss ended the entry
+        }
+
+        // ── Passed the moment the target is reached (prop-firm style) ─
+        if (rules.passOnTarget()) {
+            double afterExitFee = (s.cash + s.qty * close * (1 - fee))
+                    / rules.startingCapital() * 100 - 100;
+            int days = s.tradingDays + (s.tradedToday ? 1 : 0);
+            if (afterExitFee >= rules.profitTargetPct() && days >= rules.minTradingDays()) {
+                if (s.qty > 0) {
+                    s.cash += Sizing.exitProceeds(s.qty, close, fee);
+                    events.add(closed(s, s.qty, close, s.entryFees, t, "TARGET_REACHED"));
+                    flatten(s);
+                }
+                s.equity = s.cash;
+                s.tradingDays = days;
+                s.tradedToday = false;
+                s.pending.clear();
+                s.status = EntryState.Status.PASSED;
+                s.statusReason = String.format(Locale.ROOT,
+                        "Passed: %+.2f%% (target %.2f%%) over %d trading days, locked in "
+                                + "the moment the target was reached.",
+                        s.returnPct(rules), rules.profitTargetPct(), days);
+                s.statusCandle = t;
+                s.lastCandle = t;
+                return events; // finished: nothing more to prove
+            }
         }
 
         // ── Strategy rules at the close → orders for the next open ─
@@ -295,11 +343,6 @@ public final class CompetitionEngine {
                     }
                 }
             }
-        }
-
-        // ── A trade happened: daily loss and trade count ───────────
-        if (tradedThisCandle) {
-            checkDailyLimits(s, close);
         }
 
         s.lastCandle = t;
@@ -376,20 +419,39 @@ public final class CompetitionEngine {
         s.trailingPct = 0;
     }
 
+    /** The daily loss limit ends the entry (prop-firm style) rather than halting it. */
+    private boolean failsOnDailyLoss() {
+        return rules.dailyLoss() == RuleSet.DailyLoss.FAIL && rules.dailyLossLimitPct() > 0;
+    }
+
+    /** Fall since the equity today started with, in percent (0 if up on the day). */
+    private static double dailyLossPct(EntryState s, double equityNow) {
+        return s.dayStartEquity > 0
+                ? Math.max(0, (s.dayStartEquity - equityNow) / s.dayStartEquity * 100) : 0;
+    }
+
     /**
      * The daily rules — loss limit and trade count — valued at {@code mark}.
-     * Checked after every fill as well as at the close, so a second order
-     * filling at the same open cannot slip past a limit the first one just
-     * reached. A halt only stops new entries; exits are always allowed.
+     * Checked after every fill and at every close, so a second order filling
+     * at the same open cannot slip past a limit the first one just reached,
+     * and a position held down past the limit counts too. A halt only stops
+     * new entries; exits are always allowed. When the rules say a daily loss
+     * FAILS the entry, it is closed out at {@code mark} and this returns true.
      */
-    private void checkDailyLimits(EntryState s, double mark) {
-        if (s.haltedToday) {
-            return;
+    private boolean checkDailyLimits(EntryState s, double mark, long t, List<Event> events) {
+        double lossPct = dailyLossPct(s, s.cash + s.qty * mark);
+        boolean lossHit = rules.dailyLossLimitPct() > 0 && lossPct >= rules.dailyLossLimitPct();
+        if (lossHit && failsOnDailyLoss()) {
+            closeOut(s, events, mark, t);
+            out(s, String.format(Locale.ROOT,
+                    "Daily loss limit breached: down %.2f%% today (limit %.2f%%).",
+                    dailyLossPct(s, s.equity), rules.dailyLossLimitPct()), t);
+            return true;
         }
-        double equityNow = s.cash + s.qty * mark;
-        double lossPct = s.dayStartEquity > 0
-                ? Math.max(0, (s.dayStartEquity - equityNow) / s.dayStartEquity * 100) : 0;
-        if (rules.dailyLossLimitPct() > 0 && lossPct >= rules.dailyLossLimitPct()) {
+        if (s.haltedToday) {
+            return false; // the first reason of the day stands
+        }
+        if (lossHit) {
             halt(s, String.format(Locale.ROOT,
                     "Daily loss limit hit: down %.2f%% today (limit %.2f%%).",
                     lossPct, rules.dailyLossLimitPct()));
@@ -397,6 +459,27 @@ public final class CompetitionEngine {
                 && s.tradesToday >= rules.maxTradesPerDay()) {
             halt(s, "Max trades per day reached (" + rules.maxTradesPerDay() + ").");
         }
+        return false;
+    }
+
+    /** Sells whatever is held at {@code price} and values the account at its cash. */
+    private void closeOut(EntryState s, List<Event> events, double price, long t) {
+        if (s.qty > 0) {
+            s.cash += Sizing.exitProceeds(s.qty, price, fee);
+            events.add(closed(s, s.qty, price, s.entryFees, t, "ELIMINATED"));
+            flatten(s);
+        }
+        s.equity = s.cash;
+        s.maxDrawdownSeen = Math.max(s.maxDrawdownSeen, s.drawdownPct(rules));
+    }
+
+    /** The entry is out of the competition for good. */
+    private static void out(EntryState s, String reason, long t) {
+        s.status = EntryState.Status.ELIMINATED;
+        s.statusReason = reason;
+        s.statusCandle = t;
+        s.lastCandle = t;
+        s.pending.clear();
     }
 
     private static void countFill(EntryState s) {

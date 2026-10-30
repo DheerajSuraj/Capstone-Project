@@ -76,7 +76,12 @@ public class CompetitionController {
         try {
             rules = new RuleSet(r.startingCapital(), r.feePercent() / 100.0,
                     r.profitTargetPct(), r.maxDrawdownPct(), r.dailyLossLimitPct(),
-                    r.maxTradesPerDay(), r.minTradingDays());
+                    r.maxTradesPerDay(), r.minTradingDays(),
+                    choice(RuleSet.DailyLoss.class, r.dailyLossAction(), RuleSet.DailyLoss.HALT,
+                            "dailyLossAction"),
+                    choice(RuleSet.Drawdown.class, r.drawdownMode(), RuleSet.Drawdown.TRAILING,
+                            "drawdownMode"),
+                    Boolean.TRUE.equals(r.passOnTarget()));
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
         }
@@ -93,6 +98,21 @@ public class CompetitionController {
                 r.name(), r.description(), r.symbol(), r.timeframe(), rules,
                 r.maxEntriesPerUser(), startsAt, duration));
         return summary(c, me.getId());
+    }
+
+    /** One of an enum's names, case-insensitive; the default when left out. */
+    private static <E extends Enum<E>> E choice(Class<E> type, String value, E fallback,
+                                                String field) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        for (E e : type.getEnumConstants()) {
+            if (e.name().equalsIgnoreCase(value.trim())) {
+                return e;
+            }
+        }
+        throw new IllegalArgumentException(field + " must be one of "
+                + java.util.Arrays.toString(type.getEnumConstants()) + ".");
     }
 
     @PostMapping("/{id}/cancel")
@@ -159,15 +179,25 @@ public class CompetitionController {
                 c.getMaxEntriesPerUser(),
                 new RulesView(r.startingCapital(), r.feeFraction() * 100, r.profitTargetPct(),
                         r.maxDrawdownPct(), r.dailyLossLimitPct(), r.maxTradesPerDay(),
-                        r.minTradingDays()));
+                        r.minTradingDays(), r.dailyLoss().name(), r.drawdown().name(),
+                        r.passOnTarget()));
     }
 
     public record ListResponse(boolean canCreate, String serverTime, List<Summary> competitions) {
     }
 
+    /**
+     * @param dailyLossAction HALT (no new trades until tomorrow) or FAIL (out)
+     * @param drawdownMode    TRAILING (from the best equity) or STATIC (from
+     *                        the starting capital)
+     * @param passOnTarget    passed the moment the target and the trading
+     *                        days are met, instead of judged at the end
+     */
     public record RulesView(double startingCapital, double feePercent, double profitTargetPct,
                             double maxDrawdownPct, double dailyLossLimitPct,
-                            int maxTradesPerDay, int minTradingDays) {
+                            int maxTradesPerDay, int minTradingDays,
+                            String dailyLossAction, String drawdownMode,
+                            boolean passOnTarget) {
     }
 
     public record Summary(long id, String name, String symbol, String timeframe,
@@ -197,7 +227,11 @@ public class CompetitionController {
             int minTradingDays,
             int maxEntriesPerUser,
             String startsAt,
-            double durationHours
+            double durationHours,
+            // Prop-firm style; left out = the original rules (HALT, TRAILING, false).
+            String dailyLossAction,
+            String drawdownMode,
+            Boolean passOnTarget
     ) {
     }
 
@@ -219,7 +253,14 @@ public class CompetitionController {
             String lastCandle,
             /** The return if the open position were sold now, after the exit
              *  fee — what the profit target is finally judged on. */
-            double returnAfterExitFeePct
+            double returnAfterExitFeePct,
+            /** Where drawdownPct is measured from: TRAILING (the best equity)
+             *  or STATIC (the starting capital). */
+            String drawdownMode,
+            /** The best equity so far, and the equity today started with: the
+             *  dashboard turns the limits into money ("out below 9,000 USDT"). */
+            double peakEquity,
+            double dayStartEquity
     ) {
         static EntryView of(CompetitionEntry e, Competition c, String username,
                             String strategy, boolean mine) {
@@ -232,14 +273,14 @@ public class CompetitionController {
                     s.statusCandle < 0 ? null : Instant.ofEpochMilli(s.statusCandle).toString(),
                     e.getSubmittedAt().toString(), e.getSourceHash(),
                     s.equity, s.returnPct(r), r.profitTargetPct(),
-                    s.drawdownPct(), s.maxDrawdownSeen, r.maxDrawdownPct(),
+                    s.drawdownPct(r), s.maxDrawdownSeen, r.maxDrawdownPct(),
                     active ? s.dailyLossPct() : 0, r.dailyLossLimitPct(),
                     active ? s.tradesToday : 0, r.maxTradesPerDay(),
                     days, r.minTradingDays(),
                     active && s.haltedToday, active ? s.haltReason : null,
                     s.inTrade(), s.qty, s.entryPrice, s.tradeCount,
                     s.lastCandle < 0 ? null : Instant.ofEpochMilli(s.lastCandle).toString(),
-                    afterExitFee(s, r));
+                    afterExitFee(s, r), r.drawdown().name(), s.peakEquity, s.dayStartEquity);
         }
 
         private static double afterExitFee(EntryState s, RuleSet r) {

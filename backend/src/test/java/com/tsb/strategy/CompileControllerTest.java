@@ -78,6 +78,27 @@ class CompileControllerTest {
     }
 
     @Test
+    @DisplayName("withTree: the parse tree comes along; without it, no tree")
+    void parseTreeOnRequest() throws Exception {
+        String escaped = body(VALID_SOURCE);
+        mvc.perform(post("/api/compile")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(escaped.substring(0, escaped.length() - 1) + ", \"withTree\": true}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tree.name").value("T"))
+                .andExpect(jsonPath("$.tree.config[0].key").value("symbol"))
+                .andExpect(jsonPath("$.tree.rules[0].name").value("r"))
+                .andExpect(jsonPath("$.tree.rules[0].body[0].condition.op").value("LT"))
+                .andExpect(jsonPath("$.tree.rules[0].body[0].then.kind").value("buy"));
+
+        mvc.perform(post("/api/compile")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(VALID_SOURCE)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tree").doesNotExist());
+    }
+
+    @Test
     @DisplayName("blank source: 400 — malformed request, not a compile result")
     void blankSourceIs400() throws Exception {
         mvc.perform(post("/api/compile")

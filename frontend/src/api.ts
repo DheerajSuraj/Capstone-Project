@@ -268,6 +268,83 @@ export interface RunResponse {
 export interface CompileResponse {
   ok: boolean
   diagnostics: DiagnosticDto[]
+  /** Only when asked for (compileTree) and the code has no syntax errors. */
+  tree?: StrategyTree | null
+}
+
+// ── The parse tree (backend ParseTree.java): the code as the parser read
+// it, which the Blocks view turns into blocks. No parentheses: the tree IS
+// the grouping. A number too big for a double arrives as the text "Infinity".
+
+export type TreeBinaryOp =
+  | 'ADD' | 'SUB' | 'MUL' | 'DIV'
+  | 'LT' | 'GT' | 'LE' | 'GE' | 'EQ' | 'NEQ'
+  | 'AND' | 'OR'
+
+export type TreeExpr =
+  | { kind: 'number'; value: number | string }
+  | { kind: 'percent'; value: number | string }
+  | { kind: 'timeframe'; value: string }
+  | { kind: 'string'; value: string }
+  | { kind: 'price'; field: 'OPEN' | 'HIGH' | 'LOW' | 'CLOSE' | 'VOLUME' }
+  | { kind: 'name'; name: string }
+  | { kind: 'call'; name: string; args: TreeExpr[] }
+  | { kind: 'lookback'; target: TreeExpr; offset: number }
+  | { kind: 'on'; target: TreeExpr; timeframe: string }
+  | { kind: 'unary'; op: 'NEG' | 'NOT'; operand: TreeExpr }
+  | { kind: 'binary'; op: TreeBinaryOp; left: TreeExpr; right: TreeExpr }
+
+export type TreeSizing =
+  | { kind: 'all' }
+  | { kind: 'quantity'; amount: TreeExpr }
+  | { kind: 'percentOf'; percent: TreeExpr; base: 'EQUITY' | 'POSITION' }
+
+export type TreeAction =
+  | { kind: 'buy'; size: TreeSizing }
+  | { kind: 'sell'; size: TreeSizing }
+  | { kind: 'set'; target: 'STOPLOSS' | 'TAKEPROFIT' | 'TRAILING'; value: TreeExpr }
+
+/** The lines a statement covers (1-based, inclusive). */
+export interface TreeLines {
+  line: number
+  endLine: number
+}
+
+export interface TreeIf extends TreeLines {
+  condition: TreeExpr
+  then: TreeAction
+  else?: TreeAction | null
+}
+
+export interface TreeRule extends TreeLines {
+  name: string
+  body: TreeIf[]
+}
+
+export interface TreeLet extends TreeLines {
+  name: string
+  value: TreeExpr
+}
+
+export interface TreeConfig extends TreeLines {
+  key: string
+  value: TreeExpr
+}
+
+/** A // comment: the text after the slashes; ownLine = nothing before it on its line. */
+export interface TreeComment {
+  line: number
+  col: number
+  text: string
+  ownLine: boolean
+}
+
+export interface StrategyTree extends TreeLines {
+  name: string
+  config: TreeConfig[]
+  lets: TreeLet[]
+  rules: TreeRule[]
+  comments: TreeComment[]
 }
 
 // ── Decision debugger (Module 3) and signal statistics (Module 4) ──────
@@ -487,12 +564,100 @@ export interface ConfluenceReportDto {
   findings: ConfluenceFindingDto[]
 }
 
+// Confluence discovery (backend ConfluenceDiscovery.java): which conditions
+// the winners shared, found on the earlier trades, checked against luck and
+// on the later trades the search never saw.
+
+export type DiscoveryVerdict =
+  | 'HELD_UP'
+  | 'MIXED'
+  | 'DID_NOT_HOLD'
+  | 'TOO_FEW_LATER_TRADES'
+  | 'WITHIN_LUCK'
+
+/** Trades before and after a filter; win rates and returns in percent. */
+export interface DiscoverySideDto {
+  trades: number
+  kept: number
+  winRateAll: number
+  winRateKept: number
+  avgReturnAll: number
+  avgReturnKept: number
+}
+
+/** The backtest re-run with the filter added, over the later period. */
+/** The first six fields cover the later period only; the full… fields the
+ *  whole backtest (they match the report's return, but include the trades
+ *  the filter was picked on). */
+export interface DiscoveryRerunDto {
+  returnBefore: number
+  returnAfter: number
+  tradesBefore: number
+  tradesAfter: number
+  winRateBefore: number
+  winRateAfter: number
+  fullReturnBefore: number
+  fullReturnAfter: number
+  fullTradesBefore: number
+  fullTradesAfter: number
+}
+
+export interface DiscoveryIdeaDto {
+  id: string
+  label: string
+  family: string
+  /** TSL to add to the entry condition; null for time of day. */
+  snippet: string | null
+  found: DiscoverySideDto
+  winnersWithPct: number
+  losersWithPct: number
+  /** Win-rate points, earlier trades. */
+  lift: number
+  /** The lift luck alone reaches for a filter keeping this many trades. */
+  luckLift: number
+  beatsLuck: boolean
+  later: DiscoverySideDto
+  rerun: DiscoveryRerunDto | null
+  verdict: DiscoveryVerdict
+  /** The backtested code with this filter added to every buying IF (what the
+   *  re-run ran); null when it can't be added as code. */
+  appliedSource: string | null
+}
+
+export interface DiscoveryTriedDto {
+  label: string
+  kept: number
+  winRateKept: number
+  lift: number
+  luckLift: number
+  beatsLuck: boolean
+}
+
+export interface DiscoveryReportDto {
+  status: 'OK' | 'TOO_FEW_TRADES'
+  message: string
+  trades: number
+  wins: number
+  winRate: number
+  foundTrades: number
+  laterTrades: number
+  laterFrom: string | null
+  conditions: number
+  filtersTried: number
+  shuffles: number
+  luckZ: number
+  ideas: DiscoveryIdeaDto[]
+  topTried: DiscoveryTriedDto[]
+  rerunNote: string | null
+}
+
 export interface SignalResponse {
   ok: boolean
   diagnostics: DiagnosticDto[]
   runError: string | null
   statistics: SignalStatisticsDto | null
   confluence: ConfluenceReportDto | null
+  discovery: DiscoveryReportDto | null
 }
 
 // ── Paper trading ─────────────────────────────────────────────────────
@@ -568,6 +733,11 @@ export interface PaperOrderRequest {
 export type CompetitionStatus = 'OPEN' | 'RUNNING' | 'FINISHED' | 'CANCELLED'
 export type EntryStatus = 'ACTIVE' | 'ELIMINATED' | 'PASSED' | 'FAILED'
 
+/** HALT: no new trades until the next UTC day. FAIL: the entry is out. */
+export type DailyLossAction = 'HALT' | 'FAIL'
+/** TRAILING: measured from the best equity. STATIC: from the starting capital. */
+export type DrawdownMode = 'TRAILING' | 'STATIC'
+
 export interface CompetitionRulesDto {
   startingCapital: number
   feePercent: number
@@ -576,6 +746,11 @@ export interface CompetitionRulesDto {
   dailyLossLimitPct: number
   maxTradesPerDay: number
   minTradingDays: number
+  /** Prop-firm style; absent from older servers (= HALT, TRAILING, false). */
+  dailyLossAction?: DailyLossAction
+  drawdownMode?: DrawdownMode
+  /** Passed the moment the target and the trading days are met. */
+  passOnTarget?: boolean
 }
 
 export interface CompetitionSummaryDto {
@@ -632,6 +807,12 @@ export interface EntryViewDto {
   /** The return if the open position were sold now, after the exit fee —
    *  what the profit target is judged on at the end. */
   returnAfterExitFeePct: number
+  /** Where drawdownPct is measured from (absent from older servers = TRAILING). */
+  drawdownMode?: DrawdownMode
+  /** Best equity so far and the equity today started with, to show the
+   *  limits in money; absent from older servers. */
+  peakEquity?: number
+  dayStartEquity?: number
 }
 
 export interface CompetitionDetailDto {
@@ -690,6 +871,9 @@ export interface CreateCompetitionRequest {
   maxEntriesPerUser: number
   startsAt: string | null
   durationHours: number
+  dailyLossAction: DailyLossAction
+  drawdownMode: DrawdownMode
+  passOnTarget: boolean
 }
 
 // ── Forum ─────────────────────────────────────────────────────────────
@@ -872,6 +1056,13 @@ export const api = {
     request<CompileResponse>('/api/compile', {
       method: 'POST',
       body: JSON.stringify({ source }),
+    }),
+
+  /** compile, plus the parse tree the Blocks view builds blocks from. */
+  compileTree: (source: string): Promise<CompileResponse> =>
+    request<CompileResponse>('/api/compile', {
+      method: 'POST',
+      body: JSON.stringify({ source, withTree: true }),
     }),
 
   listStrategies: (): Promise<StrategyDto[]> =>

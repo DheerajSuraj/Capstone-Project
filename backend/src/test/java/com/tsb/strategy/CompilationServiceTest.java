@@ -66,4 +66,20 @@ class CompilationServiceTest {
         assertTrue(out.diagnostics().stream()
                 .allMatch(d -> d.code().startsWith("PAR")));
     }
+
+    @Test
+    @DisplayName("parse tree for the Blocks view: given even with semantic errors, never with syntax errors")
+    void parseTree() {
+        assertEquals("T", service.parseTree(VALID).orElseThrow().get("name"));
+
+        // Unknown indicator: the code still has a clear shape, so the blocks
+        // can show it (and the error under them).
+        assertTrue(service.parseTree(VALID.replace("RSI", "RSII")).isPresent());
+
+        // Missing THEN, or a stray character: no trustworthy tree.
+        assertTrue(service.parseTree("""
+                strategy "T" { rule r { IF CLOSE > 5 BUY ALL } }
+                """).isEmpty());
+        assertTrue(service.parseTree(VALID.replace("10000", "10000 @")).isEmpty());
+    }
 }

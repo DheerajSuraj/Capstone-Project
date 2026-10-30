@@ -756,3 +756,28 @@
 .tsb-vs b {
   font-family: var(--mono);
 }
+
+/* ── Confluence discovery (DiscoveryPanel) ── */
+.tsb-steps { margin: 10px 0 14px 18px; padding: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.tsb-steps li { margin: 2px 0; }
+.tsb-steps b { color: var(--text); font-weight: 600; }
+.tsb-ideasum { margin: 2px 0 8px; font-size: 13px; }
+.tsb-ba { display: grid; gap: 4px; margin: 4px 0 6px; }
+.tsb-ba__row { display: grid; grid-template-columns: 150px 150px minmax(60px, 1fr) 110px; gap: 10px; align-items: center; font-size: 12px; }
+.tsb-ba__label { color: var(--muted); }
+.tsb-ba__rates { font-family: var(--mono); }
+.tsb-ba__bar { height: 10px; border-radius: 5px; overflow: hidden; background: rgba(229, 84, 75, 0.45); }
+.tsb-ba__kept { font-family: var(--mono); color: var(--muted); text-align: right; }
+.tsb-rerun { margin: 10px 0 4px; padding: 8px 10px; font-size: 12.5px;
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; }
+.tsb-rerun__title { font-weight: 600; margin-bottom: 4px; }
+.tsb-rerun__row { display: grid; grid-template-columns: minmax(220px, 34%) 1fr; gap: 4px 12px;
+  padding: 2px 0; }
+.tsb-rerun .tsb-small { margin-top: 4px; }
+.tsb-advice { margin: 6px 0 2px; line-height: 1.5; }
+@media (max-width: 640px) {
+  .tsb-ba__row { grid-template-columns: 1fr 1fr; }
+  .tsb-ba__bar { grid-column: 1 / -1; }
+  .tsb-ba__kept { text-align: left; }
+  .tsb-rerun__row { grid-template-columns: 1fr; }
+}

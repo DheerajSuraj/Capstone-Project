@@ -36,6 +36,11 @@ public class Competition {
     private double dailyLossLimitPct;
     private int maxTradesPerDay;
     private int minTradingDays;
+    // Prop-firm style (V11): what the daily loss limit does, where the max
+    // drawdown is measured from, and whether reaching the target passes at once.
+    private String dailyLossAction;
+    private String drawdownMode;
+    private boolean passOnTarget;
     private int maxEntriesPerUser;
     private Instant startsAt;
     private Instant endsAt;
@@ -64,6 +69,9 @@ public class Competition {
         this.dailyLossLimitPct = rules.dailyLossLimitPct();
         this.maxTradesPerDay = rules.maxTradesPerDay();
         this.minTradingDays = rules.minTradingDays();
+        this.dailyLossAction = rules.dailyLoss().name();
+        this.drawdownMode = rules.drawdown().name();
+        this.passOnTarget = rules.passOnTarget();
         this.maxEntriesPerUser = maxEntriesPerUser;
         this.startsAt = startsAt;
         this.endsAt = endsAt;
@@ -73,7 +81,12 @@ public class Competition {
 
     public RuleSet rules() {
         return new RuleSet(startingCapital, feeFraction, profitTargetPct, maxDrawdownPct,
-                dailyLossLimitPct, maxTradesPerDay, minTradingDays);
+                dailyLossLimitPct, maxTradesPerDay, minTradingDays,
+                dailyLossAction == null ? RuleSet.DailyLoss.HALT
+                        : RuleSet.DailyLoss.valueOf(dailyLossAction),
+                drawdownMode == null ? RuleSet.Drawdown.TRAILING
+                        : RuleSet.Drawdown.valueOf(drawdownMode),
+                passOnTarget);
     }
 
     public Status status() {

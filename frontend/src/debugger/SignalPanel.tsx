@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import {
   api,
-  type ConfluenceFindingDto,
-  type ConfluenceReportDto,
+  type DiscoveryReportDto,
   type RunContext,
   type SignalStatisticsDto,
   type StatementStatsDto,
 } from '../api'
+import DiscoveryPanel from './DiscoveryPanel'
 import { leaf } from './humanize'
 import './debugger.css'
 
@@ -20,9 +20,16 @@ const p0 = (v: number) => `${Math.round(v)}%`
  * and whether winning trades had something in common — told as a story,
  * with the statistics one click away for anyone who wants them.
  */
-export default function SignalPanel({ run }: { run: RunContext }) {
+export default function SignalPanel({
+  run,
+  onApply,
+}: {
+  run: RunContext
+  /** Adds an idea's filter to the strategy in the editor (builder only). */
+  onApply?: (source: string, label: string) => void
+}) {
   const [stats, setStats] = useState<SignalStatisticsDto | null>(null)
-  const [confluence, setConfluence] = useState<ConfluenceReportDto | null>(null)
+  const [discovery, setDiscovery] = useState<DiscoveryReportDto | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'rules' | 'winners'>('rules')
@@ -32,9 +39,9 @@ export default function SignalPanel({ run }: { run: RunContext }) {
     setError(null)
     try {
       const res = await api.signals(run)
-      if (res.ok && res.statistics && res.confluence) {
+      if (res.ok && res.statistics && res.discovery) {
         setStats(res.statistics)
-        setConfluence(res.confluence)
+        setDiscovery(res.discovery)
       } else {
         setError(
           res.runError ||
@@ -69,7 +76,7 @@ export default function SignalPanel({ run }: { run: RunContext }) {
 
       {error && <p className="error-note">{error}</p>}
 
-      {stats && confluence && (
+      {stats && discovery && (
         <>
           <div className="tsb-tabs" role="tablist">
             <button
@@ -103,7 +110,7 @@ export default function SignalPanel({ run }: { run: RunContext }) {
               />
             ))}
 
-          {tab === 'winners' && <Winners report={confluence} />}
+          {tab === 'winners' && <DiscoveryPanel report={discovery} onApply={onApply} />}
         </>
       )}
     </section>
@@ -310,179 +317,4 @@ function kindOf(text: string): string {
   if (text.startsWith('CROSSOVER(')) return 'CROSSOVER'
   if (text.startsWith('CROSSUNDER(')) return 'CROSSUNDER'
   return 'COMPARE'
-}
-
-// ── Tab 2: what the winners had in common ──────────────────────────────
-
-function Winners({ report }: { report: ConfluenceReportDto }) {
-  if (report.status === 'TOO_FEW_TRADES') {
-    return (
-      <div className="tsb-empty">
-        <div className="tsb-empty__icon" aria-hidden>🧪</div>
-        <div className="tsb-empty__title">Not enough trades to look for patterns</div>
-        <p>
-          You have <b>{report.trades}</b> completed trades; we need at least <b>30</b>. With fewer,
-          any “pattern” is almost certainly luck. Try a longer date range or a looser entry rule.
-        </p>
-      </div>
-    )
-  }
-
-  const real = report.findings.filter((f) => f.significant)
-  // Biggest differences first; only the top three are shown open.
-  const luck = report.findings
-    .filter((f) => f.tested && !f.significant)
-    .sort(
-      (a, b) =>
-        Math.abs(b.winRateWith - b.winRateWithout) - Math.abs(a.winRateWith - a.winRateWithout),
-    )
-  const untested = report.findings.filter((f) => !f.tested)
-
-  return (
-    <div>
-      <div className={`tsb-verdict tsb-verdict--${real.length ? 'go' : 'quiet'}`}>
-        <div className="tsb-verdict__icon" aria-hidden>{real.length ? '🔍' : '🎲'}</div>
-        <div>
-          <div className="tsb-verdict__title">
-            {real.length
-              ? `Yes — ${real.length} pattern${real.length > 1 ? 's' : ''} stand${real.length > 1 ? '' : 's'} out`
-              : 'No clear pattern — and that’s an honest answer'}
-          </div>
-          <div className="tsb-verdict__sub">
-            We looked at {report.testsRun} things about the market at the moment each of your{' '}
-            {report.trades} trades was signalled, and compared how often trades won with and
-            without them. {report.wins} of {report.trades} trades won overall (
-            {p0(report.winRate)}).
-            {!real.length &&
-              ' The differences we saw are small enough to happen by pure luck, so none is worth turning into a rule.'}
-          </div>
-        </div>
-      </div>
-
-      {real.map((f) => (
-        <Finding key={f.feature.id} f={f} strong />
-      ))}
-
-      {luck.length > 0 && (
-        <>
-          <div className="tsb-sub tsb-sub--gap">
-            {real.length ? 'Everything else we checked' : 'What we checked'} — differences here could be luck
-          </div>
-          {luck.slice(0, 3).map((f) => (
-            <Finding key={f.feature.id} f={f} />
-          ))}
-          {luck.length > 3 && (
-            <details className="tsb-others">
-              <summary>Show the other {luck.length - 3}</summary>
-              {luck.slice(3).map((f) => (
-                <Finding key={f.feature.id} f={f} />
-              ))}
-            </details>
-          )}
-        </>
-      )}
-
-      {untested.length > 0 && (
-        <p className="tsb-dbg__muted tsb-small">
-          Not enough trades on both sides to check:{' '}
-          {untested.map((f) => f.feature.label.toLowerCase()).join(', ')}.
-        </p>
-      )}
-
-      <details className="tsb-why">
-        <summary>Show the statistics</summary>
-        <p className="tsb-small tsb-dbg__muted">
-          Fisher’s exact test on each 2×2 table (won/lost × true/false), two-sided. Because{' '}
-          {report.testsRun} tests were run, each must reach p &lt; {report.threshold.toFixed(4)}{' '}
-          (Bonferroni: 0.05 ÷ {report.testsRun}). Only conditions with at least 10 trades on each
-          side are tested.
-        </p>
-        <div className="tsb-dbg__scroll">
-          <table className="tsb-dbg__table">
-            <thead>
-              <tr>
-                <th>Condition at the signal candle</th>
-                <th className="num">When true</th>
-                <th className="num">When false</th>
-                <th className="num">p</th>
-                <th className="num">Corrected p</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.findings.map((f) => (
-                <tr key={f.feature.id} className={f.tested ? undefined : 'is-untested'}>
-                  <td>{f.feature.label}</td>
-                  <td className="num">
-                    {p0(f.winRateWith)} of {f.tradesWith}
-                  </td>
-                  <td className="num">
-                    {p0(f.winRateWithout)} of {f.tradesWithout}
-                  </td>
-                  <td className="num">{f.pValue == null ? 'not tested' : f.pValue.toFixed(3)}</td>
-                  <td className="num">{f.adjustedP == null ? '—' : f.adjustedP.toFixed(3)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
-    </div>
-  )
-}
-
-/** Two bars side by side: win rate when the condition was true vs false. */
-function Finding({ f, strong = false }: { f: ConfluenceFindingDto; strong?: boolean }) {
-  const [copied, setCopied] = useState(false)
-  const better = f.winRateWith > f.winRateWithout
-  const copy = async () => {
-    if (!f.suggestion) return
-    try {
-      await navigator.clipboard.writeText(f.suggestion)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      /* clipboard blocked — the snippet is visible to copy by hand */
-    }
-  }
-  return (
-    <div className={`tsb-find${strong ? ' is-strong' : ''}`}>
-      <div className="tsb-find__head">
-        <span className="tsb-find__label">{f.feature.label}</span>
-        <span className={`tsb-find__tag${strong ? ' is-real' : ''}`}>
-          {strong ? (better ? 'Winners had this' : 'Losers had this') : 'Could be luck'}
-        </span>
-      </div>
-      <WinBar label="When true" rate={f.winRateWith} trades={f.tradesWith} />
-      <WinBar label="When false" rate={f.winRateWithout} trades={f.tradesWithout} />
-      {strong && f.suggestion && (
-        <div className="tsb-dbg__snippet">
-          <span className="tsb-dbg__muted">Try adding to your entry, then re-test on other dates:</span>
-          <code className="tsb-dbg__code">{f.suggestion}</code>
-          <button type="button" className="ghost" onClick={copy}>
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-        </div>
-      )}
-      {strong && !f.suggestion && (
-        <div className="tsb-small tsb-dbg__muted">
-          TSL can’t filter by time of day yet, so there’s no snippet for this one.
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** Win share in green, loss share in red — profit/loss colours, used for exactly that. */
-function WinBar({ label, rate, trades }: { label: string; rate: number; trades: number }) {
-  return (
-    <div className="tsb-win">
-      <div className="tsb-win__label">{label}</div>
-      <div className="tsb-win__bar" title={`${Math.round(rate)}% of ${trades} trades won`}>
-        <div className="tsb-win__won" style={{ width: `${rate}%` }} />
-      </div>
-      <div className="tsb-win__num">
-        {p0(rate)} won <span className="tsb-dbg__muted">of {trades}</span>
-      </div>
-    </div>
-  )
 }

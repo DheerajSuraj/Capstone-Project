@@ -191,7 +191,10 @@ tr:last-child td {
   border-bottom: none;
 }
 
-td.num {
+/* Numbers line up on the right — and so do their headings, or on a wide
+   screen every heading sits over the column to its left. */
+td.num,
+th.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -258,9 +261,59 @@ td.num {
   color: var(--accent);
 }
 
+/* "Some of this code can't be shown as blocks": a choice to make, not an
+   error, so plain text with the amber edge; the code parts stay mono. */
+.blocks-notice {
+  font-family: inherit;
+  font-size: 13.5px;
+  white-space: normal;
+  border-left-color: var(--accent);
+}
+
+.blocks-notice li {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  margin: 2px 0;
+}
+
+/* Block comments (the ? on a block; a // comment in the code shows there).
+   Blockly draws the bubble pale yellow, but the textarea style above made
+   its text light grey and 260px tall: unreadable. Dark text, Blockly's
+   own size. */
+.blocklyCommentText.blocklyTextarea {
+  color: #23262d;
+  background: #fffcc7;
+  min-height: 0;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  resize: none;
+}
+
 .note {
   color: var(--muted);
   font-size: 13px;
+}
+
+/* A health-check idea just added to the code: what, plus Run and Undo. */
+.tsb-applied {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  color: var(--text, inherit);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(232, 180, 76, 0.08);
+}
+.tsb-applied__actions {
+  display: flex;
+  gap: 8px;
 }
 
 .error-note {

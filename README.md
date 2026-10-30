@@ -71,7 +71,9 @@ by network hops.
 ## Key invariants (do not break these)
 
 1. The frontend generates **DSL text**, never an AST. One compiler, one
-   front door.
+   front door. Code to blocks goes through the same compiler: the blocks
+   are built from the parse tree `/api/compile` sends (`withTree`), never
+   from a parser in the browser.
 2. Indicators are computed **once, in Java**. Never in the browser.
 3. Signals fire on bar close, fill at **next bar's open**. The bar
    context cannot index past `i`.

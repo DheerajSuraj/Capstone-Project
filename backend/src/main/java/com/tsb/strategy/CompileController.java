@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * POST /api/compile — compile TSL source, get diagnostics and (on success) a
@@ -51,22 +52,30 @@ public class CompileController {
     public CompileResponse compile(@RequestBody @jakarta.validation.Valid CompileRequest request) {
         CompilationService.Outcome outcome =
                 compilationService.compile(request.source());
-        return CompileResponse.from(outcome);
+        Map<String, Object> tree = Boolean.TRUE.equals(request.withTree())
+                ? compilationService.parseTree(request.source()).orElse(null)
+                : null;
+        return CompileResponse.from(outcome, tree);
     }
 
     // ── The public contract ─────────────────────────────────────────────
 
     /** Request body: the TSL source. 64 KiB is generous for a strategy and
-     *  cheap insurance against abuse. */
+     *  cheap insurance against abuse. {@code withTree: true} also asks for
+     *  the parse tree (the Blocks view builds blocks from it); left out, the
+     *  response is exactly what it always was. */
     public record CompileRequest(
             @NotBlank(message = "source must not be blank")
             @Size(max = 65_536, message = "source too large (max 64 KiB)")
-            String source
+            String source,
+            Boolean withTree
     ) {
     }
 
     /**
-     * Response body. {@code summary} is present iff {@code ok}.
+     * Response body. {@code summary} is present iff {@code ok}. {@code tree}
+     * is present only when the request asked for it and the code has no
+     * syntax errors (see {@link com.tsb.compiler.ParseTree}).
      * Example (error case):
      * <pre>{@code
      * { "ok": false,
@@ -74,22 +83,26 @@ public class CompileController {
      *       "message": "unknown name 'rsii' — did you mean 'rsi'?",
      *       "span": { "startLine": 9, "startCol": 12, "endLine": 9,
      *                 "endCol": 16, "blockId": null } } ],
-     *   "summary": null }
+     *   "summary": null,
+     *   "tree": null }
      * }</pre>
      */
     public record CompileResponse(
             boolean ok,
             List<DiagnosticDto> diagnostics,
-            StrategySummary summary
+            StrategySummary summary,
+            Map<String, Object> tree
     ) {
-        static CompileResponse from(CompilationService.Outcome outcome) {
+        static CompileResponse from(CompilationService.Outcome outcome,
+                                    Map<String, Object> tree) {
             return new CompileResponse(
                     outcome.ok(),
                     outcome.diagnostics().stream()
                             .map(DiagnosticDto::from).toList(),
                     outcome.ok()
                             ? StrategySummary.from(outcome.strategy().orElseThrow())
-                            : null);
+                            : null,
+                    tree);
         }
     }
 

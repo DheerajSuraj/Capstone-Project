@@ -31,6 +31,7 @@ export default function ResultPanel({
   candles,
   source,
   chartNote,
+  onApplyFilter,
 }: {
   result: BacktestResultDto
   candles: CandleColumns | null
@@ -38,6 +39,9 @@ export default function ResultPanel({
   source?: string
   /** Said under the price chart: e.g. that it shows only the newest candles. */
   chartNote?: string | null
+  /** Put a health-check idea into the editor: the backtested code with the
+   *  filter added. Only where the code can be edited (the builder). */
+  onApplyFilter?: (source: string, label: string) => void
 }) {
   const [selectedTime, setSelectedTime] = useState<number | null>(null)
   // Warning and danger levels for cash, shared by the chart and the panel.
@@ -191,7 +195,9 @@ export default function ResultPanel({
         />
       )}
 
-      {run && <SignalPanel key={`${run.source}|${run.to}`} run={run} />}
+      {run && (
+        <SignalPanel key={`${run.source}|${run.to}`} run={run} onApply={onApplyFilter} />
+      )}
 
       <div className="tsb-tablewrap">
       <table>

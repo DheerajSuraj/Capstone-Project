@@ -10,9 +10,12 @@ import java.util.Map;
  * "Rank all entries" and "add up each user's entries into their cumulative
  * score" from the sequence diagram. Pure: rows in, ranks out.
  *
- * <p><b>Entry ranking:</b> entries still in the competition (or passed) come
- * first, then those that failed at the end, then eliminated ones; within a
- * group, higher return first; ties go to whoever submitted first.
+ * <p><b>Entry ranking:</b> passed entries come first — passing is the point
+ * of a challenge, and with rules that pass at the target a passed entry stops
+ * trading, so one still running must not outrank it on money alone — then
+ * entries still in the competition, then those that failed at the end, then
+ * eliminated ones; within a group, higher return first; ties go to whoever
+ * submitted first.
  *
  * <p><b>Trader ranking:</b> a user's cumulative score is the total profit
  * or loss across all of their entries (equity minus starting capital,
@@ -33,9 +36,10 @@ public final class Standings {
 
     private static int group(EntryState.Status s) {
         return switch (s) {
-            case ACTIVE, PASSED -> 0;
-            case FAILED -> 1;
-            case ELIMINATED -> 2;
+            case PASSED -> 0;
+            case ACTIVE -> 1;
+            case FAILED -> 2;
+            case ELIMINATED -> 3;
         };
     }
 

@@ -112,6 +112,10 @@
 .tsb-cmp__presets { display: flex; flex-wrap: wrap; gap: 6px; }
 .tsb-cmp__presets button { background: transparent; border: 1px solid var(--border); color: var(--muted); }
 .tsb-cmp__presets button.is-on { border-color: var(--accent); color: var(--accent); }
+.tsb-cmp__presets button:disabled { opacity: 0.45; cursor: not-allowed; }
+/* A two-way choice under a number: small, right below its input. */
+.tsb-cmp__choice { gap: 4px; }
+.tsb-cmp__choice button { margin-top: 0; padding: 4px 9px; font-size: 12px; }
 .tsb-cmp__preview { grid-column: 1 / -1; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 6px; }
 .tsb-cmp__actions { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; }
 
@@ -172,6 +176,8 @@
 .tsb-meter__fill.is-calm { background: #6b7280; }
 .tsb-meter__fill.is-warn { background: #c9a14a; }
 .tsb-meter__fill.is-danger { background: #e6e8ec; }
+.tsb-meter__note { margin-top: 3px; font-size: 11px; color: var(--muted); }
+.tsb-meter__warn { color: var(--text); font-weight: 600; }
 
 @media (max-width: 600px) {
   .tsb-dash__money { grid-template-columns: repeat(2, minmax(0, 1fr)); }

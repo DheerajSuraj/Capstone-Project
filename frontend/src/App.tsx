@@ -48,9 +48,11 @@ export default function App() {
   const [source, setSource] = useState(STARTER)
   const [name, setName] = useState('')
   const [editingId, setEditingId] = useState<number | null>(null)
-  // What the Blocks view last produced, and its blocks: the Builder opens on
-  // Code whenever the source is anything else, and coming back to Blocks
-  // shows the user's blocks rather than the starter.
+  // The blocks last shown, and the code they show (they are built from the
+  // code, or the code was written from them). While the code is still that
+  // code, going back to Blocks reopens these blocks as they were left;
+  // otherwise the blocks are built again from the code. The Builder opens
+  // on Code when the code came from somewhere else.
   const [blocksSource, setBlocksSource] = useState<string | null>(null)
   const [blocksState, setBlocksState] = useState<object | null>(null)
   const [authOpen, setAuthOpen] = useState(false)

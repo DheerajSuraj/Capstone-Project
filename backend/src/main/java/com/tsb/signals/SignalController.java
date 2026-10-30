@@ -52,10 +52,12 @@ public class SignalController {
             List<CompileController.DiagnosticDto> diagnostics,
             String runError,
             SignalStatistics.Report statistics,
-            Confluence.Report confluence
+            Confluence.Report confluence,
+            /** Which conditions winners shared, checked against luck and on later trades. */
+            ConfluenceDiscovery.Report discovery
     ) {
         static SignalResponse error(String message) {
-            return new SignalResponse(false, List.of(), message, null, null);
+            return new SignalResponse(false, List.of(), message, null, null, null);
         }
     }
 
@@ -76,7 +78,7 @@ public class SignalController {
         if (!prep.diagnostics().isEmpty()) {
             return new SignalResponse(false, prep.diagnostics().stream()
                     .map(CompileController.DiagnosticDto::from).toList(),
-                    null, null, null);
+                    null, null, null, null);
         }
         if (prep.runError().isPresent()) {
             return SignalResponse.error(prep.runError().get());
@@ -90,6 +92,8 @@ public class SignalController {
         return new SignalResponse(true, List.of(), null,
                 SignalStatistics.compute(explainer, nearMiss),
                 Confluence.analyze(p.strategy(), p.series(),
-                        explainer.result().trades()));
+                        explainer.result().trades()),
+                ConfluenceDiscovery.analyze(request.source(), p.strategy(), p.series(),
+                        p.rules(), explainer.result()));
     }
 }

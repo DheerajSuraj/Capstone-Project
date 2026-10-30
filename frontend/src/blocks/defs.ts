@@ -1,5 +1,6 @@
 import * as Blockly from 'blockly'
 import { CATEGORIES, INDICATORS } from './registry'
+import { DEFAULT_FEE_PERCENT, ON_TIMEFRAMES, SYMBOLS, TIMEFRAMES } from './options'
 
 // ── Structural blocks (hand-defined) + 28 indicator blocks (generated
 // from the registry) + the graphite theme + the category toolbox.
@@ -7,6 +8,11 @@ import { CATEGORIES, INDICATORS } from './registry'
 // The type system, made physical: Number-shaped outputs cannot plug into
 // Boolean sockets. A whole class of the compiler's SEM errors becomes
 // impossible to CONSTRUCT; whatever remains is caught by live compilation.
+
+const choices = (values: string[]) => values.map((v) => [v, v])
+
+/** Colour of the named-value blocks (TSL's `let`). */
+const NAMED = 300
 
 const defs: object[] = [
   // ── Strategy shell ──
@@ -16,35 +22,53 @@ const defs: object[] = [
     args0: [{ type: 'field_input', name: 'NAME', text: 'My Strategy' }],
     message1: 'symbol %1 timeframe %2',
     args1: [
-      {
-        type: 'field_dropdown',
-        name: 'SYMBOL',
-        options: [
-          ['BTCUSDT', 'BTCUSDT'],
-          ['ETHUSDT', 'ETHUSDT'],
-          ['SOLUSDT', 'SOLUSDT'],
-        ],
-      },
-      {
-        type: 'field_dropdown',
-        name: 'TIMEFRAME',
-        options: [
-          ['5m', '5m'],
-          ['15m', '15m'],
-          ['1h', '1h'],
-          ['4h', '4h'],
-        ],
-      },
+      { type: 'field_dropdown', name: 'SYMBOL', options: choices(SYMBOLS) },
+      { type: 'field_dropdown', name: 'TIMEFRAME', options: choices(TIMEFRAMES) },
     ],
     message2: 'capital %1 fee %2 %%',
     args2: [
       { type: 'field_number', name: 'CAPITAL', value: 10000, min: 1 },
-      { type: 'field_number', name: 'FEE', value: 0.1, min: 0, precision: 0.01 },
+      // No rounding: a fee of 0.075% must stay 0.075%.
+      { type: 'field_number', name: 'FEE', value: DEFAULT_FEE_PERCENT, min: 0 },
     ],
-    message3: 'rules %1',
-    args3: [{ type: 'input_statement', name: 'RULES', check: 'Rule' }],
+    message3: 'named values %1',
+    args3: [{ type: 'input_statement', name: 'VALUES', check: 'Let' }],
+    message4: 'rules %1',
+    args4: [{ type: 'input_statement', name: 'RULES', check: 'Rule' }],
     colour: 45,
-    tooltip: 'The strategy: configuration plus rules. One per canvas.',
+    tooltip: 'The strategy: settings, named values and rules. One per canvas.',
+  },
+  // ── Named values (TSL's `let`) ──
+  {
+    type: 'tsl_let',
+    message0: 'let %1 = %2',
+    args0: [
+      { type: 'field_input', name: 'NAME', text: 'value' },
+      { type: 'input_value', name: 'VALUE' },
+    ],
+    previousStatement: 'Let',
+    nextStatement: 'Let',
+    colour: NAMED,
+    inputsInline: true,
+    tooltip:
+      'A named value: work something out once (a number or a yes/no condition), ' +
+      'then use it by name in the rules and in the named values below it.',
+  },
+  {
+    type: 'tsl_ref_num',
+    message0: '%1',
+    args0: [{ type: 'field_input', name: 'NAME', text: 'value' }],
+    output: 'Number',
+    colour: NAMED,
+    tooltip: 'A named number from "named values". The name must match a let.',
+  },
+  {
+    type: 'tsl_ref_cond',
+    message0: '%1',
+    args0: [{ type: 'field_input', name: 'NAME', text: 'condition' }],
+    output: 'Boolean',
+    colour: NAMED,
+    tooltip: 'A named yes/no condition from "named values". The name must match a let.',
   },
   {
     type: 'tsl_rule',
@@ -118,7 +142,8 @@ const defs: object[] = [
           ['trailing stop', 'TRAILING'],
         ],
       },
-      { type: 'field_number', name: 'PCT', value: 5, min: 0.01, max: 100 },
+      // No upper limit: a take profit can sit more than 100% above the entry.
+      { type: 'field_number', name: 'PCT', value: 5, min: 0.01 },
     ],
     output: 'Action',
     colour: 60,
@@ -243,18 +268,9 @@ const defs: object[] = [
     message0: '%1 on the %2 chart',
     args0: [
       { type: 'input_value', name: 'TARGET', check: 'Number' },
-      {
-        type: 'field_dropdown',
-        name: 'TF',
-        options: [
-          ['4h', '4h'],
-          ['1d', '1d'],
-          ['1w', '1w'],
-          ['12h', '12h'],
-          ['1h', '1h'],
-          ['15m', '15m'],
-        ],
-      },
+      // Every timeframe the compiler accepts after ON; the toolbox block
+      // starts on 4h.
+      { type: 'field_dropdown', name: 'TF', options: choices(ON_TIMEFRAMES) },
     ],
     output: 'Number',
     colour: 230,
@@ -297,12 +313,14 @@ for (const ind of INDICATORS) {
       args.push({ type: 'input_value', name: a.name, check: 'Number' })
     } else {
       parts.push(`${a.name.toLowerCase()} %${slot}`)
+      // Periods are whole numbers; other settings (a Bollinger k of 2.25)
+      // keep every decimal.
       args.push({
         type: 'field_number',
         name: a.name,
         value: a.default ?? 14,
         min: a.kind === 'period' ? 1 : 0.01,
-        precision: a.kind === 'period' ? 1 : 0.01,
+        ...(a.kind === 'period' ? { precision: 1 } : {}),
       })
     }
     slot++
@@ -338,6 +356,36 @@ export const tslTheme = Blockly.Theme.defineTheme('tsl-dark', {
   },
   fontStyle: { family: "'IBM Plex Mono', monospace", size: 11 },
 })
+
+// ── The "Named values" category, built each time it opens ──
+export const NAMED_VALUES = 'TSL_NAMED_VALUES'
+
+/** A let block, then a block for each named value on the canvas: a
+ *  hexagon for a condition, a round one for a number. Register it with
+ *  workspace.registerToolboxCategoryCallback(NAMED_VALUES, ...). */
+export function namedValuesFlyout(ws: Blockly.WorkspaceSvg): Blockly.utils.toolbox.FlyoutItemInfoArray {
+  const items: Blockly.utils.toolbox.FlyoutItemInfoArray = [
+    { kind: 'label', text: 'Work something out once:' },
+    { kind: 'block', type: 'tsl_let' },
+  ]
+  const seen = new Set<string>()
+  const lets = ws.getAllBlocks(true).filter((b) => b.type === 'tsl_let' && !b.isInFlyout)
+  for (const let_ of lets) {
+    const name = String(let_.getFieldValue('NAME') ?? '').trim()
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    if (seen.size === 1) items.push({ kind: 'label', text: '…then use it by name:' })
+    const check = let_.getInputTargetBlock('VALUE')?.outputConnection?.getCheck()
+    const type = check?.includes('Boolean') ? 'tsl_ref_cond' : 'tsl_ref_num'
+    items.push({ kind: 'block', type, fields: { NAME: name } })
+  }
+  if (seen.size === 0) {
+    items.push({ kind: 'label', text: 'Use it by name (match the let):' })
+    items.push({ kind: 'block', type: 'tsl_ref_num' })
+    items.push({ kind: 'block', type: 'tsl_ref_cond' })
+  }
+  return items
+}
 
 // ── Toolbox: categories in learn-order, indicators grouped by family ──
 const indicatorCategory = (name: string) => ({
@@ -403,11 +451,14 @@ export const toolbox = {
         { kind: 'block', type: 'tsl_number' },
         { kind: 'block', type: 'tsl_arith' },
         { kind: 'block', type: 'tsl_lookback' },
-        { kind: 'block', type: 'tsl_on' },
+        { kind: 'block', type: 'tsl_on', fields: { TF: '4h' } },
         { kind: 'block', type: 'tsl_minmax' },
         { kind: 'block', type: 'tsl_abs' },
       ],
     },
+    // Filled when opened (namedValuesFlyout): one block per named value
+    // already on the canvas, so using one is a drag, not typing its name.
+    { kind: 'category', name: 'Named values', colour: String(NAMED), custom: NAMED_VALUES },
     indicatorCategory('Moving averages'),
     indicatorCategory('Oscillators'),
     indicatorCategory('Trend'),

@@ -47,7 +47,8 @@ export default function CompetitionList({
           <p className="tsb-cmp__muted">
             Submit a strategy, and it trades live candles that did not exist when you entered —
             under the same rules and the same starting money as everyone else. Hit the profit
-            target without breaking a rule to pass.
+            target without breaking a rule to pass. The money is virtual: nothing real is
+            bought or sold.
           </p>
         </div>
         {data?.canCreate && (

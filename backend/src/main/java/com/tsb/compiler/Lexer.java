@@ -36,10 +36,29 @@ public final class Lexer {
      * the token stream is best-effort and compilation must not proceed past
      * parsing for execution purposes.
      */
-    public record LexResult(List<Token> tokens, List<Diagnostic> diagnostics) {
+    public record LexResult(List<Token> tokens, List<Diagnostic> diagnostics,
+                            List<Comment> comments) {
+        /** Without comments: the shape callers used before comments were kept. */
+        public LexResult(List<Token> tokens, List<Diagnostic> diagnostics) {
+            this(tokens, diagnostics, List.of());
+        }
+
         public boolean hasErrors() {
             return diagnostics.stream().anyMatch(Diagnostic::isError);
         }
+    }
+
+    /**
+     * One {@code //} comment: where its slashes are, and the text after them
+     * (trailing spaces dropped). {@code ownLine} is true when nothing but
+     * spaces comes before it on its line, false for a comment at the end of
+     * a line of code.
+     *
+     * <p>The parser never sees comments; they mean nothing to the language.
+     * They are kept only so the Blocks view can show the code's comments on
+     * its blocks and write them back out.
+     */
+    public record Comment(int line, int col, String text, boolean ownLine) {
     }
 
     private final String source;
@@ -54,6 +73,7 @@ public final class Lexer {
 
     private final List<Token> tokens = new ArrayList<>();
     private final List<Diagnostic> diagnostics = new ArrayList<>();
+    private final List<Comment> comments = new ArrayList<>();
 
     public Lexer(String source) {
         this.source = Objects.requireNonNull(source, "source must not be null");
@@ -74,7 +94,8 @@ public final class Lexer {
         // "unexpected end of input" errors still point at a real position.
         tokens.add(new Token(TokenType.EOF, "", null,
                 new Span(line, col, line, col, null)));
-        return new LexResult(List.copyOf(tokens), List.copyOf(diagnostics));
+        return new LexResult(List.copyOf(tokens), List.copyOf(diagnostics),
+                List.copyOf(comments));
     }
 
     // ── Dispatch ────────────────────────────────────────────────────────
@@ -251,9 +272,16 @@ public final class Lexer {
                 }
                 case '/' -> {
                     if (peekAt(1) == '/') {
+                        int commentLine = line;
+                        int commentCol = col;
+                        int start = pos;
                         while (!atEnd() && peek() != '\n') {
                             advance();
                         }
+                        boolean ownLine = tokens.isEmpty()
+                                || tokens.get(tokens.size() - 1).span().endLine() < commentLine;
+                        comments.add(new Comment(commentLine, commentCol,
+                                source.substring(start + 2, pos).stripTrailing(), ownLine));
                     } else {
                         return; // a real SLASH token; let scanToken have it
                     }

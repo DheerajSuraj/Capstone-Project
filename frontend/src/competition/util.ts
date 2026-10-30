@@ -57,9 +57,19 @@ export const ENTRY_LABEL: Record<EntryStatus, string> = {
   FAILED: 'Failed',
 }
 
+/** What each status means, for a tooltip. */
+export const ENTRY_HELP: Record<EntryStatus, string> = {
+  ACTIVE: 'Still trading under the rules.',
+  ELIMINATED: 'Broke a limit (max drawdown or a daily loss that ends the entry) and was stopped there.',
+  PASSED: 'Met the profit target and the trading days.',
+  FAILED: 'Finished without meeting the target or the trading days, or could not be run.',
+}
+
 type Ranked = { rank: number | null; status: EntryStatus; equity: number }
 
-const GROUP: Record<EntryStatus, number> = { ACTIVE: 0, PASSED: 0, FAILED: 1, ELIMINATED: 2 }
+// The same groups as the server's Standings: passed first, then still in,
+// then failed, then eliminated.
+const GROUP: Record<EntryStatus, number> = { PASSED: 0, ACTIVE: 1, FAILED: 2, ELIMINATED: 3 }
 
 /**
  * Places to show. Before the first candle every entry has the same money,
@@ -90,16 +100,26 @@ export function shownRanks<T extends Ranked>(
   return out
 }
 
+/** When the daily rules start a new day (00:00 UTC), on this computer's clock. */
+export const dayStartsHere = () =>
+  new Date(Date.UTC(2000, 0, 1, 0, 0)).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+
 /** The rule set as short chips. */
 export function ruleChips(r: CompetitionRulesDto): string[] {
   const out = [
-    `${money(r.startingCapital, 0)} USDT each`,
-    `Target +${r.profitTargetPct}%`,
-    `Max drawdown ${r.maxDrawdownPct}%`,
+    `${money(r.startingCapital, 0)} virtual USDT each`,
+    `Target +${r.profitTargetPct}%${r.passOnTarget ? ', pass at once' : ''}`,
+    r.drawdownMode === 'STATIC'
+      ? `Max loss ${r.maxDrawdownPct}% (fixed)`
+      : `Max drawdown ${r.maxDrawdownPct}% (trailing)`,
   ]
-  if (r.dailyLossLimitPct > 0) out.push(`Daily loss ${r.dailyLossLimitPct}%`)
+  if (r.dailyLossLimitPct > 0)
+    out.push(`Daily loss ${r.dailyLossLimitPct}% ${r.dailyLossAction === 'FAIL' ? '= out' : '= pause'}`)
   if (r.maxTradesPerDay > 0) out.push(`≤ ${r.maxTradesPerDay} trades/day`)
-  if (r.minTradingDays > 0) out.push(`≥ ${r.minTradingDays} trading days`)
+  if (r.minTradingDays > 0) out.push(`≥ ${r.minTradingDays} trading day${r.minTradingDays === 1 ? '' : 's'}`)
   out.push(`${r.feePercent}% fee`)
   return out
 }

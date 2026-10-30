@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   api,
   type BacktestResultDto,
@@ -6,8 +6,16 @@ import {
   type DiagnosticDto,
 } from '../api'
 import BlockEditor from '../blocks/BlockEditor'
+import { codeToBlocks } from '../blocks/codeToBlocks'
+import { EMPTY_STATE } from '../blocks/fromTree'
 import ResultPanel from '../components/ResultPanel'
 import { STARTERS } from '../lab/starters'
+
+/** Why the code is not (yet) shown as blocks. */
+type BlocksNotice =
+  | { kind: 'syntax'; diagnostics: DiagnosticDto[] }
+  | { kind: 'inexact'; problems: string[]; state: object; source: string }
+  | { kind: 'error'; message: string }
 
 /**
  * The builder: blocks (the MVP centerpiece) or code, then Run for an
@@ -37,29 +45,89 @@ export default function BuilderView({
   onSaved: (strategyId: number) => void
   /** Open on the Code tab: the source came from somewhere other than the blocks. */
   startInCode?: boolean
-  /** The last code the Blocks view produced (null = never used). */
+  /** The code that `blocksState` shows (null = no blocks yet). */
   blocksSource?: string | null
   onBlocksSource?: (s: string) => void
   blocksState?: object | null
   onBlocksState?: (state: object) => void
 }) {
-  const [mode, setMode] = useState<'blocks' | 'text'>(
-    editingId || startInCode ? 'text' : 'blocks',
-  )
+  // The blocks in hand still show this code: reopen them as they were,
+  // layout and all, instead of building them again.
+  const blocksFit = blocksState != null && blocksSource === source
+  const wantBlocks = !(editingId || startInCode)
+  const [mode, setMode] = useState<'blocks' | 'text'>(wantBlocks && blocksFit ? 'blocks' : 'text')
+  const [building, setBuilding] = useState(false)
+  const [notice, setNotice] = useState<BlocksNotice | null>(null)
+  // A new set of blocks needs a fresh editor (it reads its blocks once).
+  const [editorKey, setEditorKey] = useState(0)
+  const [syncOnLoad, setSyncOnLoad] = useState(false)
+  const buildSeq = useRef(0)
+  // The code as it is now, for a build that finishes after it changed.
+  const latestSource = useRef(source)
+  useEffect(() => {
+    latestSource.current = source
+  }, [source])
 
-  // Blocks always show their own strategy. Switching to them replaces the
-  // code below — so say so first whenever that code is not theirs.
-  const toBlocks = () => {
-    if (mode === 'blocks') return
-    if (source.trim() && source !== blocksSource) {
-      const ok = window.confirm(
-        'The Blocks view shows its own strategy and will replace the code below. ' +
-          'Save first if you want to keep it. Switch to Blocks anyway?',
-      )
-      if (!ok) return
-    }
+  const showBlocks = (state: object, code: string, sync: boolean) => {
+    onBlocksState?.(state)
+    onBlocksSource?.(code)
+    setSyncOnLoad(sync)
+    setEditorKey((k) => k + 1)
+    setNotice(null)
     setMode('blocks')
   }
+
+  // Blocks show the strategy in the code: the compiler reads the code and
+  // the blocks are built from what it read. Nothing is replaced: the code
+  // stays as written until a block is changed. Only code the blocks can't
+  // show exactly stops here, and then the person decides.
+  const openBlocks = async (code: string = source) => {
+    if (blocksState != null && blocksSource === code) {
+      setSyncOnLoad(false)
+      setNotice(null)
+      setMode('blocks')
+      return
+    }
+    const mine = ++buildSeq.current
+    setBuilding(true)
+    setNotice(null)
+    const stay = (n: BlocksNotice) => {
+      setNotice(n)
+      setMode('text') // the code, with the reason above it
+    }
+    try {
+      const res = await codeToBlocks(code)
+      // Typed into the code meanwhile, or pressed Code: this answer is stale.
+      if (mine !== buildSeq.current || latestSource.current !== code) return
+      if (res.kind === 'exact') showBlocks(res.state, code, false)
+      else if (res.kind === 'inexact') stay({ kind: 'inexact', problems: res.problems, state: res.state, source: code })
+      else stay({ kind: 'syntax', diagnostics: res.diagnostics })
+    } catch (e) {
+      if (mine !== buildSeq.current) return
+      stay({ kind: 'error', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      if (mine === buildSeq.current) setBuilding(false)
+    }
+  }
+
+  const toBlocks = () => {
+    if (mode === 'blocks' || building) return
+    void openBlocks()
+  }
+  const toCode = () => {
+    buildSeq.current++ // a build still on its way is no longer wanted
+    setBuilding(false)
+    setNotice(null)
+    setMode('text')
+  }
+
+  // Opening the Builder on Blocks with code the blocks don't show yet
+  // (the starter on a first visit): build them from that code.
+  useEffect(() => {
+    if (wantBlocks && !blocksFit) void openBlocks()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const [busy, setBusy] = useState(false)
   const [diagnostics, setDiagnostics] = useState<DiagnosticDto[]>([])
   const [runError, setRunError] = useState<string | null>(null)
@@ -74,8 +142,47 @@ export default function BuilderView({
   // land under the result of a later one.
   const runSeq = useRef(0)
 
+  // A health-check idea put into the editor: what it was, and the code
+  // before it, for Undo.
+  const [applied, setApplied] = useState<{ label: string; previous: string } | null>(null)
+  const editorTop = useRef<HTMLElement>(null)
+
+  /** Swap in new code and show it the way the person is looking at it. */
+  const putSource = (next: string) => {
+    setSource(next)
+    setNotice(null)
+    if (mode === 'blocks' || building) void openBlocks(next)
+  }
+
+  const applyFilter = (next: string, label: string) => {
+    // The idea was worked out on the code that was backtested. If the code
+    // has been edited since, adding it means going back to that code.
+    if (
+      runSource != null &&
+      source !== runSource &&
+      !window.confirm(
+        'Your code has changed since this backtest. Adding this filter puts back the code ' +
+          'you backtested, with the filter added, and your later edits are lost (Undo brings ' +
+          'them back). Continue?',
+      )
+    ) {
+      return
+    }
+    setApplied({ label, previous: source })
+    setSavedNote(null)
+    putSource(next)
+    editorTop.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const undoApply = () => {
+    if (!applied) return
+    putSource(applied.previous)
+    setApplied(null)
+  }
+
   const run = async () => {
     const mine = ++runSeq.current
+    setApplied(null)
     setBusy(true)
     setResult(null)
     setCandles(null)
@@ -145,25 +252,78 @@ export default function BuilderView({
 
   return (
     <>
-      <section className="panel">
+      <section className="panel" ref={editorTop}>
         <h2>{editingId ? `New version of strategy #${editingId}` : 'Strategy builder'}</h2>
 
         <div style={{ display: 'flex', gap: 8, margin: '0 0 12px' }}>
           <button
             className="ghost"
-            style={mode === 'blocks' ? { background: 'rgba(232,180,76,0.14)' } : undefined}
+            style={mode === 'blocks' || building ? { background: 'rgba(232,180,76,0.14)' } : undefined}
             onClick={toBlocks}
+            aria-busy={building}
           >
             Blocks
           </button>
           <button
             className="ghost"
-            style={mode === 'text' ? { background: 'rgba(232,180,76,0.14)' } : undefined}
-            onClick={() => setMode('text')}
+            style={mode === 'text' && !building ? { background: 'rgba(232,180,76,0.14)' } : undefined}
+            onClick={toCode}
           >
             Code
           </button>
         </div>
+
+        {applied && (
+          <div className="note tsb-applied" role="status">
+            <span>
+              ✓ Added “<b>{applied.label}</b>” to every rule that buys. Run the backtest to see
+              what it changes.
+            </span>
+            <span className="tsb-applied__actions">
+              <button onClick={run} disabled={busy}>
+                Run backtest
+              </button>
+              <button className="ghost" onClick={undoApply}>
+                Undo
+              </button>
+            </span>
+          </div>
+        )}
+
+        {notice?.kind === 'syntax' && (
+          <div className="diag" role="alert">
+            <b>The code has a mistake, so it can't be shown as blocks yet.</b> Fix it
+            below, then press Blocks again:
+            <ul style={{ margin: '4px 0 0 18px' }}>
+              {notice.diagnostics.map((d, i) => (
+                <li key={i}>
+                  {d.span.startLine}:{d.span.startCol} — {d.message}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {notice?.kind === 'inexact' && (
+          <div className="diag blocks-notice" role="alert">
+            <b>Some of this code can't be shown as blocks:</b>
+            <ul style={{ margin: '4px 0 8px 18px' }}>
+              {notice.problems.map((p, i) => (
+                <li key={i}>{p}</li>
+              ))}
+            </ul>
+            <button onClick={() => setNotice(null)}>Keep editing the code</button>{' '}
+            <button className="ghost" onClick={() => showBlocks(notice.state, notice.source, true)}>
+              Use the blocks anyway
+            </button>
+            <p className="note" style={{ margin: '6px 0 0' }}>
+              “Use the blocks anyway” rewrites the code to what the blocks show, without
+              the parts above. Save first if you want to keep this version.
+            </p>
+          </div>
+        )}
+        {notice?.kind === 'error' && (
+          <p className="error-note">Couldn't build the blocks from the code: {notice.message}</p>
+        )}
 
         {!editingId && (
           <div className="tsb-starter">
@@ -176,7 +336,9 @@ export default function BuilderView({
                 if (!s) return
                 setSource(s.source)
                 setName(s.name)
-                setMode('text')
+                // On Blocks, show the starter's blocks; on Code, its code.
+                if (mode === 'blocks' || building) void openBlocks(s.source)
+                else setNotice(null)
               }}
             >
               <option value="">Choose one…</option>
@@ -189,14 +351,32 @@ export default function BuilderView({
           </div>
         )}
 
-        {mode === 'blocks' ? (
+        {building ? (
+          <div
+            className="note"
+            role="status"
+            style={{
+              height: '62vh',
+              minHeight: 420,
+              display: 'grid',
+              placeItems: 'center',
+              border: '1px solid var(--line)',
+              borderRadius: 6,
+            }}
+          >
+            Building the blocks from the code…
+          </div>
+        ) : mode === 'blocks' ? (
           <BlockEditor
+            key={editorKey}
+            initialState={blocksState ?? EMPTY_STATE}
+            source={source}
             onSource={(s) => {
               setSource(s)
               onBlocksSource?.(s)
             }}
-            initialState={blocksState}
             onState={onBlocksState}
+            syncOnLoad={syncOnLoad}
           />
         ) : (
           <>
@@ -205,7 +385,12 @@ export default function BuilderView({
               id="source"
               value={source}
               spellCheck={false}
-              onChange={(e) => setSource(e.target.value)}
+              onChange={(e) => {
+                setSource(e.target.value)
+                setApplied(null) // Undo would now also throw away this typing
+                // Its blocks were for the code as it was.
+                if (notice?.kind === 'inexact') setNotice(null)
+              }}
             />
           </>
         )}
@@ -248,6 +433,7 @@ export default function BuilderView({
           candles={candles}
           source={runSource ?? undefined}
           chartNote={chartNote}
+          onApplyFilter={applyFilter}
         />
       )}
     </>

@@ -4,11 +4,13 @@ import com.tsb.compiler.Analyzer;
 import com.tsb.compiler.CompiledStrategy;
 import com.tsb.compiler.Diagnostic;
 import com.tsb.compiler.Lexer;
+import com.tsb.compiler.ParseTree;
 import com.tsb.compiler.Parser;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -61,5 +63,24 @@ public class CompilationService {
         all.addAll(analyzed.diagnostics());
 
         return new Outcome(analyzed.strategy(), List.copyOf(all));
+    }
+
+    /**
+     * The strategy's parse tree (see {@link ParseTree}), for the Blocks view
+     * to build blocks from. Empty when the code has a lexical or syntax
+     * error: then there is no trustworthy tree, and the diagnostics from
+     * {@link #compile} say what to fix. Code with only semantic errors does
+     * get a tree — the blocks show it as written, errors and all.
+     */
+    public Optional<Map<String, Object>> parseTree(String source) {
+        Lexer.LexResult lexed = new Lexer(source).scan();
+        if (lexed.hasErrors()) {
+            return Optional.empty();
+        }
+        Parser.ParseResult parsed = new Parser(lexed.tokens()).parse();
+        if (parsed.hasErrors() || parsed.strategy().isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(ParseTree.of(parsed.strategy().get(), lexed.comments()));
     }
 }

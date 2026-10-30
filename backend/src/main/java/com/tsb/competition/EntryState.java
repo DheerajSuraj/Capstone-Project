@@ -94,6 +94,15 @@ public final class EntryState {
         return peakEquity > 0 ? (peakEquity - equity) / peakEquity * 100 : 0;
     }
 
+    /**
+     * Fall from where these rules measure the max drawdown — the best equity
+     * (trailing) or the starting capital (static) — in percent, 0 if above it.
+     */
+    public double drawdownPct(RuleSet rules) {
+        double base = rules.drawdownBase(peakEquity);
+        return base > 0 ? Math.max(0, (base - equity) / base * 100) : 0;
+    }
+
     /** Fall since today's first candle, in percent (0 if up on the day). */
     public double dailyLossPct() {
         return dayStartEquity > 0
